@@ -22,6 +22,7 @@ function setup() {
   repository.initialize();
   repositories.push(repository);
   const userId = repository.ensureUser("123");
+  repository.setUserLocale(userId, "en");
   const environment = repository.saveEnvironment({
     userId,
     name: "local",

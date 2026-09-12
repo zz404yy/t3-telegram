@@ -6,6 +6,8 @@ import type {
   ThreadSubscriptionState,
 } from "../domain/types.js";
 
+export type BotLocale = "zh" | "en";
+
 export interface SaveEnvironmentInput {
   userId: string;
   name: string;
@@ -32,6 +34,8 @@ export interface GatewayRepository {
   initialize(): void;
   ensureUser(telegramUserId: string): string;
   findUserId(telegramUserId: string): string | undefined;
+  getUserLocale(userId: string): BotLocale | undefined;
+  setUserLocale(userId: string, locale: BotLocale): void;
   getTelegramControlTopic(chatId: string): string | undefined;
   saveTelegramControlTopic(chatId: string, threadId: string): void;
   saveEnvironment(input: SaveEnvironmentInput): EnvironmentRecord;

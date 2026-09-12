@@ -9,6 +9,13 @@ export const migrations = [
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS telegram_user_preferences (
+    user_id TEXT PRIMARY KEY,
+    locale TEXT NOT NULL CHECK(locale IN ('zh', 'en')),
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS environments (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,

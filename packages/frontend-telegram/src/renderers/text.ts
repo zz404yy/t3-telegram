@@ -1,4 +1,4 @@
-import type { BackendCapabilities, DiffSummary, ThreadSummary } from "@t3-vibe/core";
+import type { BackendCapabilities, BotLocale, DiffSummary, ThreadSummary } from "@t3-vibe/core";
 
 export function chunkTelegramText(text: string, maxLength = 3900): string[] {
   if (text.length <= maxLength) return [text];
@@ -19,32 +19,43 @@ export function compactThreadName(thread: Pick<ThreadSummary, "title" | "id">): 
   return `${thread.title} · ${thread.id.slice(0, 8)}`;
 }
 
-export function renderDiffSummary(diff: DiffSummary): string {
-  if (diff.files.length === 0 && diff.diff.trim().length === 0) return "本次没有可显示的文件变更。";
+export function renderDiffSummary(diff: DiffSummary, locale: BotLocale = "zh"): string {
+  if (diff.files.length === 0 && diff.diff.trim().length === 0)
+    return locale === "zh" ? "本次没有可显示的文件变更。" : "No file changes to display.";
   const lines = [
-    `变更：${diff.files.length} 个文件，+${diff.additions} / -${diff.deletions}`,
+    locale === "zh"
+      ? `变更：${diff.files.length} 个文件，+${diff.additions} / -${diff.deletions}`
+      : `Changes: ${diff.files.length} file(s), +${diff.additions} / -${diff.deletions}`,
     "",
     ...diff.files.slice(0, 12).map((file) => `${file.path}  +${file.additions} -${file.deletions}`),
   ];
-  if (diff.files.length > 12) lines.push(`…另有 ${diff.files.length - 12} 个文件`);
+  if (diff.files.length > 12)
+    lines.push(
+      locale === "zh"
+        ? `…另有 ${diff.files.length - 12} 个文件`
+        : `…and ${diff.files.length - 12} more file(s)`,
+    );
   return lines.join("\n");
 }
 
-export function renderCapabilities(capabilities: BackendCapabilities): string {
-  const labels: Array<[keyof BackendCapabilities, string]> = [
-    ["projectsList", "项目"],
-    ["projectCreate", "新建项目"],
-    ["threadsList", "线程"],
-    ["threadCreate", "新建"],
-    ["turnStart", "执行"],
-    ["streaming", "流式"],
-    ["turnInterrupt", "停止"],
-    ["approval", "审批"],
+export function renderCapabilities(
+  capabilities: BackendCapabilities,
+  locale: BotLocale = "zh",
+): string {
+  const labels: Array<[keyof BackendCapabilities, string, string?]> = [
+    ["projectsList", "项目", "Projects"],
+    ["projectCreate", "新建项目", "Create project"],
+    ["threadsList", "线程", "Threads"],
+    ["threadCreate", "新建", "Create thread"],
+    ["turnStart", "执行", "Run"],
+    ["streaming", "流式", "Streaming"],
+    ["turnInterrupt", "停止", "Stop"],
+    ["approval", "审批", "Approval"],
     ["diffThread", "Diff"],
-    ["resumeSubscription", "断线续传"],
+    ["resumeSubscription", "断线续传", "Resume"],
   ];
   return labels
-    .map(([key, label]) => {
+    .map(([key, zh, en = zh]) => {
       const value = capabilities[key];
       const icon =
         value.state === "supported"
@@ -54,7 +65,7 @@ export function renderCapabilities(capabilities: BackendCapabilities): string {
             : value.state === "unsupported"
               ? "❌"
               : "❔";
-      return `${icon} ${label}: ${value.state}${"reason" in value && value.reason ? ` (${value.reason})` : ""}`;
+      return `${icon} ${locale === "zh" ? zh : en}: ${value.state}${"reason" in value && value.reason ? ` (${value.reason})` : ""}`;
     })
     .join("\n");
 }

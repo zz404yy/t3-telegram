@@ -4,6 +4,7 @@ import type { Logger } from "pino";
 import type {
   ApprovalRequest,
   BindingRecord,
+  BotLocale,
   ChangedFileSummary,
   CodingBackend,
   GatewayRepository,
@@ -19,6 +20,7 @@ interface ThreadSubscriptionManagerOptions {
   repository: GatewayRepository;
   logger: Logger;
   allowedUserIds: Set<string>;
+  localeForUser?: (userId: string) => BotLocale;
   resubscribeDelayMs?: number;
 }
 
@@ -408,17 +410,29 @@ export class ThreadSubscriptionManager {
       const additions = session.files.reduce((total, file) => total + file.additions, 0);
       const deletions = session.files.reduce((total, file) => total + file.deletions, 0);
       const diffSummary = session.files.length
-        ? renderDiffSummary({
-            diff: "",
-            files: session.files,
-            additions,
-            deletions,
-          })
+        ? renderDiffSummary(
+            {
+              diff: "",
+              files: session.files,
+              additions,
+              deletions,
+            },
+            this.locale(binding),
+          )
         : "";
+      const locale = this.locale(binding);
+      const status =
+        locale === "zh"
+          ? event.status === "success"
+            ? "成功"
+            : event.status === "cancelled"
+              ? "已取消"
+              : "失败"
+          : event.status;
       await session.streamer.finalize(
         this.withRouteLabel(
           binding,
-          `${output}${output ? "\n\n" : ""}${icon} Turn ${event.status}${diffSummary ? `\n\n${diffSummary}` : ""}`,
+          `${output}${output ? "\n\n" : ""}${icon} ${locale === "zh" ? "任务" : "Turn"} ${status}${diffSummary ? `\n\n${diffSummary}` : ""}`,
         ),
       );
       session.completed = true;
@@ -448,13 +462,22 @@ export class ThreadSubscriptionManager {
     return `[${binding.displayName ?? binding.t3ThreadId.slice(0, 8)}]\n${text}`;
   }
 
+  private locale(binding: BindingRecord): BotLocale {
+    return (
+      this.options.localeForUser?.(binding.userId) ??
+      this.options.repository.getUserLocale(binding.userId) ??
+      "zh"
+    );
+  }
+
   private async sendApproval(binding: BindingRecord, request: ApprovalRequest): Promise<void> {
+    const locale = this.locale(binding);
     if (request.options.length === 0) {
       await this.options.api.sendMessage(
         chatTarget(binding.telegramChatId),
         this.withRouteLabel(
           binding,
-          `⚠️ T3 请求审批，但没有提供可安全识别的选项。网关不会猜测，请在 T3 官方客户端处理。\n\n${request.title}${request.detail ? `\n${request.detail}` : ""}`,
+          `${locale === "zh" ? "⚠️ T3 请求审批，但没有提供可安全识别的选项。网关不会猜测，请在 T3 官方客户端处理。" : "⚠️ T3 requested approval without any safely identifiable options. The gateway will not guess; handle it in the official T3 client."}\n\n${request.title}${request.detail ? `\n${request.detail}` : ""}`,
         ),
         threadOptions(binding),
       );
@@ -477,11 +500,11 @@ export class ThreadSubscriptionManager {
       this.withRouteLabel(
         binding,
         [
-          "⚠️ Approval required",
+          locale === "zh" ? "⚠️ 需要审批" : "⚠️ Approval required",
           "",
           request.title,
           request.detail ?? "",
-          request.appName ? `App: ${request.appName}` : "",
+          request.appName ? `${locale === "zh" ? "应用" : "App"}: ${request.appName}` : "",
         ]
           .filter(Boolean)
           .join("\n"),

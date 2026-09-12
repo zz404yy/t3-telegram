@@ -15,6 +15,16 @@ function repository(): SqliteGatewayRepository {
 afterEach(() => repositories.splice(0).forEach((repo) => repo.close()));
 
 describe("SQLite gateway repository", () => {
+  it("persists a Telegram user's selected language", () => {
+    const repo = repository();
+    const userId = repo.ensureUser("123");
+    expect(repo.getUserLocale(userId)).toBeUndefined();
+    repo.setUserLocale(userId, "en");
+    expect(repo.getUserLocale(userId)).toBe("en");
+    repo.setUserLocale(userId, "zh");
+    expect(repo.getUserLocale(userId)).toBe("zh");
+  });
+
   it("persists one replaceable control topic per Telegram chat", () => {
     const repo = repository();
     expect(repo.getTelegramControlTopic("99")).toBeUndefined();

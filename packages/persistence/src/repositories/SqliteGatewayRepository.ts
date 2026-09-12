@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import type {
   ApprovalOption,
+  BotLocale,
   BindingRecord,
   EnvironmentRecord,
   GatewayRepository,
@@ -54,6 +55,25 @@ export class SqliteGatewayRepository implements GatewayRepository {
       .prepare("SELECT id FROM users WHERE telegram_user_id = ?")
       .get(telegramUserId) as Row | undefined;
     return row ? String(row.id) : undefined;
+  }
+
+  getUserLocale(userId: string): BotLocale | undefined {
+    const row = this.db
+      .prepare("SELECT locale FROM telegram_user_preferences WHERE user_id = ?")
+      .get(userId) as Row | undefined;
+    return row?.locale === "zh" || row?.locale === "en" ? row.locale : undefined;
+  }
+
+  setUserLocale(userId: string, locale: BotLocale): void {
+    this.db
+      .prepare(
+        `INSERT INTO telegram_user_preferences(user_id, locale, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           locale = excluded.locale,
+           updated_at = excluded.updated_at`,
+      )
+      .run(userId, locale, new Date().toISOString());
   }
 
   getTelegramControlTopic(chatId: string): string | undefined {

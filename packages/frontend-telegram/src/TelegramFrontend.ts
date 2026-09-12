@@ -4,12 +4,12 @@ import { Bot, InlineKeyboard, Keyboard, type Context } from "grammy";
 import type {
   BackendCapabilities,
   BindingRecord,
+  BotLocale,
   CodingBackend,
   EnvironmentConnector,
   GatewayRepository,
   ModelProviderSummary,
   ProjectSummary,
-  SupportedThreadRuntimeMode,
   ThreadSummary,
 } from "@t3-vibe/core";
 import {
@@ -20,6 +20,15 @@ import {
 } from "@t3-vibe/core";
 import { compactThreadName, renderCapabilities, renderDiffSummary } from "./renderers/text.js";
 import { ThreadSubscriptionManager } from "./ThreadSubscriptionManager.js";
+import {
+  CONTROL_MENU_KEYS,
+  detectLocale,
+  MENUS,
+  menuLabels,
+  RUNTIME_MODES,
+  tr,
+  type MenuKey,
+} from "./localization.js";
 
 export interface TelegramFrontendOptions {
   token: string;
@@ -71,66 +80,10 @@ function chatTarget(id: string): number | string {
   return Number.isSafeInteger(numeric) ? numeric : id;
 }
 
-const MENU = {
-  newProject: "🗂 新建项目",
-  projectModel: "⚙️ 项目模型",
-  newThread: "➕ 新建线程",
-  attach: "🔗 绑定线程",
-  backgroundThreads: "🧵 后台线程",
-  history: "📜 历史记录",
-  threadSettings: "🛠 线程设置",
-  clearSessions: "🧹 清除会话",
-  status: "📊 状态",
-  stop: "⏹ 停止",
-  diff: "🧾 Diff",
-  environments: "🌐 环境",
-  connect: "🔌 连接 T3",
-  detach: "🔓 解除绑定",
-  help: "❓ 帮助",
-} as const;
-
-const CONTROL_MENU_ACTIONS = [
-  MENU.newProject,
-  MENU.projectModel,
-  MENU.newThread,
-  MENU.attach,
-  MENU.backgroundThreads,
-  MENU.clearSessions,
-  MENU.status,
-  MENU.environments,
-  MENU.connect,
-  MENU.help,
-] as const;
+const CONTROL_MENU_ACTIONS = CONTROL_MENU_KEYS.flatMap(menuLabels);
 
 const HISTORY_PAGE_SIZE = 6;
 const MODEL_PAGE_SIZE = 8;
-
-const RUNTIME_MODES: ReadonlyArray<{
-  value: SupportedThreadRuntimeMode;
-  label: string;
-  detail: string;
-}> = [
-  {
-    value: "approval-required",
-    label: "🔒 每次审批",
-    detail: "只读沙箱；写文件和执行操作通常需要你确认。",
-  },
-  {
-    value: "auto-accept-edits",
-    label: "✍️ 自动批准编辑",
-    detail: "允许工作区写入；敏感命令仍会向你申请。",
-  },
-  {
-    value: "auto",
-    label: "🤖 自动审批",
-    detail: "允许工作区写入，并由 T3 自动审查审批请求。",
-  },
-  {
-    value: "full-access",
-    label: "⚠️ 完全访问",
-    detail: "不询问审批，且不使用文件系统沙箱。风险最高。",
-  },
-];
 
 type PendingMenuAction =
   | { type: "connect" }
@@ -161,31 +114,15 @@ export class TelegramFrontend {
       repository: options.repository,
       logger: options.logger,
       allowedUserIds: options.allowedUserIds,
+      localeForUser: (userId) => options.repository.getUserLocale(userId) ?? "zh",
     });
     this.registerHandlers();
   }
 
   async initialize(): Promise<void> {
     await this.bot.init();
-    await this.bot.api.setMyCommands([
-      { command: "start", description: "开始与连接状态" },
-      { command: "menu", description: "重新显示按钮菜单" },
-      { command: "connect", description: "连接 T3 环境" },
-      { command: "environments", description: "列出 T3 环境" },
-      { command: "projects", description: "列出项目" },
-      { command: "newproject", description: "新建 T3 项目" },
-      { command: "models", description: "设置项目默认模型" },
-      { command: "new", description: "新建并绑定 T3 线程" },
-      { command: "attach", description: "绑定已有 T3 线程" },
-      { command: "threads", description: "管理后台监听线程" },
-      { command: "history", description: "查看当前线程历史记录" },
-      { command: "threadsettings", description: "修改当前线程模型与权限" },
-      { command: "status", description: "连接与能力状态" },
-      { command: "stop", description: "停止当前 turn" },
-      { command: "diff", description: "查看当前线程 diff" },
-      { command: "detach", description: "仅解除 Telegram 绑定" },
-      { command: "help", description: "使用帮助" },
-    ]);
+    await this.bot.api.setMyCommands(this.commands("en"));
+    await this.bot.api.setMyCommands(this.commands("zh"), { language_code: "zh" });
     await this.bot.api.setChatMenuButton({ menu_button: { type: "commands" } });
     this.topicsEnabled = this.bot.botInfo.has_topics_enabled === true;
     if (!this.topicsEnabled)
@@ -228,9 +165,20 @@ export class TelegramFrontend {
     this.bot.use(async (ctx, next) => {
       const chat = ctx.chat ?? ctx.stoppedMessageGeneration?.chat;
       if (chat?.type !== "private") {
-        if (ctx.message) await ctx.reply("请在与机器人的私聊中使用 T3 网关。");
+        const locale = detectLocale(ctx.from?.language_code);
+        if (ctx.message)
+          await ctx.reply(
+            tr(
+              locale,
+              "请在与机器人的私聊中使用 T3 网关。",
+              "Use the T3 gateway in a private chat with the bot.",
+            ),
+          );
         if (ctx.callbackQuery)
-          await ctx.answerCallbackQuery({ text: "仅支持私聊", show_alert: true });
+          await ctx.answerCallbackQuery({
+            text: tr(locale, "仅支持私聊", "Private chats only"),
+            show_alert: true,
+          });
         return;
       }
       // Telegram emits forum-topic service updates with the bot itself as the actor when a
@@ -247,13 +195,21 @@ export class TelegramFrontend {
       if (sourceId === undefined) return;
       const userId = String(sourceId);
       if (!this.options.allowedUserIds.has(userId)) {
-        if (ctx.message) await ctx.reply("无权使用此机器人。");
+        const locale = detectLocale(ctx.from?.language_code);
+        if (ctx.message)
+          await ctx.reply(tr(locale, "无权使用此机器人。", "You are not allowed to use this bot."));
         if (ctx.callbackQuery)
-          await ctx.answerCallbackQuery({ text: "无权操作", show_alert: true });
+          await ctx.answerCallbackQuery({
+            text: tr(locale, "无权操作", "Not authorized"),
+            show_alert: true,
+          });
         return;
       }
       if (this.options.repository.hasProcessedUpdate(ctx.update.update_id)) {
-        if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: "该操作已处理" });
+        if (ctx.callbackQuery)
+          await ctx.answerCallbackQuery({
+            text: this.text(ctx, "该操作已处理", "This action was already handled"),
+          });
         return;
       }
       await next();
@@ -267,15 +223,26 @@ export class TelegramFrontend {
       await this.sendControlPanel(
         String(ctx.chat!.id),
         environments.length === 0
-          ? "T3 Vibe Gateway 已就绪。\n\n点击“🔌 连接 T3”开始配置。"
-          : `T3 Vibe Gateway 已就绪，已配置 ${environments.length} 个环境。\n请直接使用下方菜单，或发送编码指令。`,
+          ? this.text(
+              ctx,
+              "T3 Vibe Gateway 已就绪。\n\n点击“🔌 连接 T3”开始配置。",
+              "T3 Vibe Gateway is ready.\n\nTap “🔌 Connect T3” to get started.",
+            )
+          : this.text(
+              ctx,
+              `T3 Vibe Gateway 已就绪，已配置 ${environments.length} 个环境。\n请直接使用下方菜单，或发送编码指令。`,
+              `T3 Vibe Gateway is ready with ${environments.length} environment(s).\nUse the menu below or send a coding instruction.`,
+            ),
       );
     });
 
     this.bot.command("help", async (ctx) => this.showHelp(ctx));
     this.bot.command("menu", async (ctx) => {
       this.clearPendingMenuAction(ctx);
-      await this.sendControlPanel(String(ctx.chat!.id), "按钮菜单已恢复。");
+      await this.sendControlPanel(
+        String(ctx.chat!.id),
+        this.text(ctx, "按钮菜单已恢复。", "The button menu has been restored."),
+      );
     });
 
     this.bot.command("connect", async (ctx) => {
@@ -346,63 +313,88 @@ export class TelegramFrontend {
       if (await this.keepMenuActionInControlTopic(ctx)) await next();
     });
 
-    this.bot.hears(MENU.newProject, async (ctx) => this.beginProjectCreation(ctx));
-    this.bot.hears(MENU.projectModel, async (ctx) => this.showModelProjects(ctx));
-    this.bot.hears(MENU.newThread, async (ctx) => {
+    this.bot.hears(menuLabels("newProject"), async (ctx) => this.beginProjectCreation(ctx));
+    this.bot.hears(menuLabels("projectModel"), async (ctx) => this.showModelProjects(ctx));
+    this.bot.hears(menuLabels("newThread"), async (ctx) => {
       this.clearPendingMenuAction(ctx);
       await this.deleteNavigationMessage(ctx);
       await this.showProjects(ctx);
     });
-    this.bot.hears(MENU.attach, async (ctx) => {
+    this.bot.hears(menuLabels("attach"), async (ctx) => {
       this.clearPendingMenuAction(ctx);
       await this.deleteNavigationMessage(ctx);
       await this.showThreads(ctx, "");
     });
-    this.bot.hears(MENU.status, async (ctx) => {
+    this.bot.hears(menuLabels("status"), async (ctx) => {
       this.clearPendingMenuAction(ctx);
       await this.showStatus(ctx);
     });
-    this.bot.hears(MENU.backgroundThreads, async (ctx) => {
+    this.bot.hears(menuLabels("backgroundThreads"), async (ctx) => {
       this.clearPendingMenuAction(ctx);
       await this.showBackgroundThreads(ctx);
     });
-    this.bot.hears(MENU.history, async (ctx) => {
+    this.bot.hears(menuLabels("history"), async (ctx) => {
       this.clearPendingMenuAction(ctx);
       await this.showHistory(ctx, 0);
     });
-    this.bot.hears(MENU.threadSettings, async (ctx) => {
+    this.bot.hears(menuLabels("threadSettings"), async (ctx) => {
       this.clearPendingMenuAction(ctx);
       await this.showThreadSettings(ctx);
     });
-    this.bot.hears(MENU.clearSessions, async (ctx) => this.beginClearSessions(ctx));
-    this.bot.hears(MENU.stop, async (ctx) => {
+    this.bot.hears(menuLabels("clearSessions"), async (ctx) => this.beginClearSessions(ctx));
+    this.bot.hears(menuLabels("stop"), async (ctx) => {
       this.clearPendingMenuAction(ctx);
       await this.stopTurn(ctx);
     });
-    this.bot.hears(MENU.diff, async (ctx) => {
+    this.bot.hears(menuLabels("diff"), async (ctx) => {
       this.clearPendingMenuAction(ctx);
       await this.showDiff(ctx);
     });
-    this.bot.hears(MENU.environments, async (ctx) => this.showEnvironments(ctx));
-    this.bot.hears(MENU.connect, async (ctx) => {
+    this.bot.hears(menuLabels("environments"), async (ctx) => this.showEnvironments(ctx));
+    this.bot.hears(menuLabels("connect"), async (ctx) => {
       this.pendingMenuActions.set(this.pendingMenuKey(ctx), { type: "connect" });
       await ctx.reply(
-        [
-          "请在 T3 主机运行 `npx t3 pair` 获取一次性 token。",
-          "然后发送一条消息：",
-          "http://T3主机:3773 PAIRING_TOKEN",
-          "",
-          "同机运行可使用：http://127.0.0.1:3773 PAIRING_TOKEN",
-        ].join("\n"),
+        this.text(
+          ctx,
+          [
+            "请在 T3 主机运行 `npx t3 pair` 获取一次性 token。",
+            "然后发送一条消息：",
+            "http://T3主机:3773 PAIRING_TOKEN",
+            "",
+            "同机运行可使用：http://127.0.0.1:3773 PAIRING_TOKEN",
+          ].join("\n"),
+          [
+            "Run `npx t3 pair` on the T3 host to get a one-time token.",
+            "Then send one message:",
+            "http://T3-HOST:3773 PAIRING_TOKEN",
+            "",
+            "On the same host, use: http://127.0.0.1:3773 PAIRING_TOKEN",
+          ].join("\n"),
+        ),
       );
     });
-    this.bot.hears(MENU.detach, async (ctx) => this.detachBinding(ctx));
-    this.bot.hears(MENU.help, async (ctx) => this.showHelp(ctx));
+    this.bot.hears(menuLabels("detach"), async (ctx) => this.detachBinding(ctx));
+    this.bot.hears(menuLabels("help"), async (ctx) => this.showHelp(ctx));
+    this.bot.hears(menuLabels("language"), async (ctx) => {
+      this.clearPendingMenuAction(ctx);
+      const locale: BotLocale = ctx.message?.text === MENUS.zh.language ? "en" : "zh";
+      this.options.repository.setUserLocale(this.userId(ctx), locale);
+      await this.sendControlPanel(
+        String(ctx.chat.id),
+        tr(locale, "✅ 已切换为中文。", "✅ Switched to English."),
+      );
+    });
 
     this.bot.callbackQuery(/^pc:(.+)$/, async (ctx) => {
       const pending = this.pendingMenuActions.get(this.pendingMenuKey(ctx));
       if (pending?.type !== "project_environment") {
-        await ctx.answerCallbackQuery({ text: "创建流程已失效，请重新点击新建项目。" });
+        await ctx.answerCallbackQuery({
+          text: this.text(
+            ctx,
+            "创建流程已失效，请重新点击新建项目。",
+            "The creation flow expired. Tap New project again.",
+          ),
+        });
         return;
       }
       const environmentId = ctx.match[1]!;
@@ -410,7 +402,10 @@ export class TelegramFrontend {
         .listEnvironments(this.userId(ctx))
         .find((item) => item.id === environmentId);
       if (!environment) {
-        await ctx.answerCallbackQuery({ text: "环境不存在或无权使用。", show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, "环境不存在或无权使用。", "Environment not found or inaccessible."),
+          show_alert: true,
+        });
         return;
       }
       this.clearPendingMenuAction(ctx);
@@ -423,17 +418,30 @@ export class TelegramFrontend {
       const optionIndex = Number(ctx.match[2]);
       const pending = this.options.repository.findPendingApproval(approvalId);
       if (!pending || pending.status !== "pending") {
-        await ctx.answerCallbackQuery({ text: "该审批已处理或已失效", show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, "该审批已处理或已失效", "This approval was handled or expired"),
+          show_alert: true,
+        });
         return;
       }
       const binding = this.options.repository.findBinding(pending.bindingId);
       if (!binding || binding.userId !== this.userId(ctx)) {
-        await ctx.answerCallbackQuery({ text: "无权处理此审批", show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, "无权处理此审批", "You cannot handle this approval"),
+          show_alert: true,
+        });
         return;
       }
       const option = pending.options[optionIndex];
       if (!option || !this.options.repository.claimPendingApproval(approvalId)) {
-        await ctx.answerCallbackQuery({ text: "审批选项无效或已处理", show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: this.text(
+            ctx,
+            "审批选项无效或已处理",
+            "Invalid or already handled approval option",
+          ),
+          show_alert: true,
+        });
         return;
       }
       try {
@@ -445,14 +453,16 @@ export class TelegramFrontend {
           decision: option.decision,
         });
         this.options.repository.resolvePendingApproval(approvalId);
-        await ctx.answerCallbackQuery({ text: `已提交：${option.label}` });
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, `已提交：${option.label}`, `Submitted: ${option.label}`),
+        });
         await ctx
           .editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } })
           .catch(() => undefined);
       } catch (error) {
         this.options.repository.releasePendingApproval(approvalId);
         this.logError(ctx, error, "approval");
-        await ctx.answerCallbackQuery({ text: safeErrorMessage(error), show_alert: true });
+        await ctx.answerCallbackQuery({ text: this.errorText(ctx, error), show_alert: true });
       }
     });
 
@@ -464,17 +474,30 @@ export class TelegramFrontend {
         binding.userId !== this.userId(ctx) ||
         binding.telegramChatId !== String(ctx.chat!.id)
       ) {
-        await ctx.answerCallbackQuery({ text: "绑定已不存在或无权访问。", show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, "绑定已不存在或无权访问。", "Binding not found or inaccessible."),
+          show_alert: true,
+        });
         return;
       }
       if (this.topicsEnabled && binding.telegramThreadId) {
-        await ctx.answerCallbackQuery({ text: "已在目标 Topic 发送定位消息" });
+        await ctx.answerCallbackQuery({
+          text: this.text(
+            ctx,
+            "已在目标 Topic 发送定位消息",
+            "A locator was sent to the target topic",
+          ),
+        });
         await ctx.api.sendMessage(
           chatTarget(binding.telegramChatId),
-          `📍 ${binding.displayName ?? shortId(binding.t3ThreadId)}\n请进入这个 Topic 后发送编码指令。`,
+          this.text(
+            ctx,
+            `📍 ${binding.displayName ?? shortId(binding.t3ThreadId)}\n请进入这个 Topic 后发送编码指令。`,
+            `📍 ${binding.displayName ?? shortId(binding.t3ThreadId)}\nOpen this topic, then send your coding instruction.`,
+          ),
           {
             message_thread_id: Number(binding.telegramThreadId),
-            reply_markup: this.mainMenu(),
+            reply_markup: this.mainMenu(this.locale(ctx)),
           },
         );
         return;
@@ -486,13 +509,22 @@ export class TelegramFrontend {
           binding.id,
         )
       ) {
-        await ctx.answerCallbackQuery({ text: "绑定已不存在或无权访问。", show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, "绑定已不存在或无权访问。", "Binding not found or inaccessible."),
+          show_alert: true,
+        });
         return;
       }
-      await ctx.answerCallbackQuery({ text: "已切换默认输入线程" });
+      await ctx.answerCallbackQuery({
+        text: this.text(ctx, "已切换默认输入线程", "Default input thread changed"),
+      });
       await ctx.reply(
-        `✅ 默认输入线程已切换为：${binding.displayName ?? shortId(binding.t3ThreadId)}`,
-        { reply_markup: this.mainMenu() },
+        this.text(
+          ctx,
+          `✅ 默认输入线程已切换为：${binding.displayName ?? shortId(binding.t3ThreadId)}`,
+          `✅ Default input thread: ${binding.displayName ?? shortId(binding.t3ThreadId)}`,
+        ),
+        { reply_markup: this.mainMenu(this.locale(ctx)) },
       );
     });
 
@@ -501,18 +533,28 @@ export class TelegramFrontend {
       if (!binding) return;
       await ctx.answerCallbackQuery();
       await ctx.editMessageText(
-        [
-          "🔓 确认解除 Telegram 绑定？",
-          "",
-          `线程：${binding.displayName ?? shortId(binding.t3ThreadId)}`,
-          "",
-          "这会停止该绑定的后台监听，但不会归档或删除 T3 线程，之后仍可重新绑定。",
-        ].join("\n"),
+        this.text(
+          ctx,
+          [
+            "🔓 确认解除 Telegram 绑定？",
+            "",
+            `线程：${binding.displayName ?? shortId(binding.t3ThreadId)}`,
+            "",
+            "这会停止该绑定的后台监听，但不会归档或删除 T3 线程，之后仍可重新绑定。",
+          ].join("\n"),
+          [
+            "🔓 Detach this Telegram binding?",
+            "",
+            `Thread: ${binding.displayName ?? shortId(binding.t3ThreadId)}`,
+            "",
+            "This stops its background listener without archiving or deleting the T3 thread. You can attach it again later.",
+          ].join("\n"),
+        ),
         {
           reply_markup: new InlineKeyboard()
-            .text("确认解除", `bdc:${binding.id}`)
+            .text(this.text(ctx, "确认解除", "Detach"), `bdc:${binding.id}`)
             .row()
-            .text("取消", "bdb"),
+            .text(this.text(ctx, "取消", "Cancel"), "bdb"),
         },
       );
     });
@@ -525,16 +567,25 @@ export class TelegramFrontend {
         binding.id,
       );
       if (!removed) {
-        await ctx.answerCallbackQuery({ text: "绑定已不存在。", show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, "绑定已不存在。", "The binding no longer exists."),
+          show_alert: true,
+        });
         return;
       }
       this.subscriptionManager.sync();
-      await ctx.answerCallbackQuery({ text: "已解除 Telegram 绑定" });
+      await ctx.answerCallbackQuery({
+        text: this.text(ctx, "已解除 Telegram 绑定", "Telegram binding detached"),
+      });
       if (binding.telegramThreadId) {
         await ctx.api
           .sendMessage(
             chatTarget(binding.telegramChatId),
-            "🔓 此 Topic 已解除 T3 线程绑定；T3 线程本身未被修改，可从“绑定线程”重新绑定。",
+            this.text(
+              ctx,
+              "🔓 此 Topic 已解除 T3 线程绑定；T3 线程本身未被修改，可从“绑定线程”重新绑定。",
+              "🔓 This topic was detached from its T3 thread. The T3 thread was not changed and can be attached again.",
+            ),
             { message_thread_id: Number(binding.telegramThreadId) },
           )
           .catch((error: unknown) =>
@@ -547,7 +598,11 @@ export class TelegramFrontend {
       await this.showBackgroundThreads(
         ctx,
         true,
-        `✅ 已解除：${binding.displayName ?? shortId(binding.t3ThreadId)}`,
+        this.text(
+          ctx,
+          `✅ 已解除：${binding.displayName ?? shortId(binding.t3ThreadId)}`,
+          `✅ Detached: ${binding.displayName ?? shortId(binding.t3ThreadId)}`,
+        ),
       );
     });
     this.bot.callbackQuery(/^bdb$/, async (ctx) => {
@@ -566,12 +621,21 @@ export class TelegramFrontend {
         pending.userId !== this.userId(ctx) ||
         pending.chatId !== String(ctx.chat!.id)
       ) {
-        await ctx.answerCallbackQuery({ text: "清理确认已失效。", show_alert: true });
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, "清理确认已失效。", "The clear confirmation expired."),
+          show_alert: true,
+        });
         return;
       }
       this.pendingSessionClears.delete(confirmationId);
-      await ctx.answerCallbackQuery({ text: "已取消" });
-      await ctx.editMessageText("已取消清除，会话和绑定均未修改。");
+      await ctx.answerCallbackQuery({ text: this.text(ctx, "已取消", "Cancelled") });
+      await ctx.editMessageText(
+        this.text(
+          ctx,
+          "已取消清除，会话和绑定均未修改。",
+          "Clear cancelled. Sessions and bindings were not changed.",
+        ),
+      );
     });
 
     this.bot.callbackQuery(/^hi:([0-9a-f-]+):(\d+)$/, async (ctx) => {
@@ -583,7 +647,11 @@ export class TelegramFrontend {
         binding.telegramThreadId !== messageThreadId(ctx)
       ) {
         await ctx.answerCallbackQuery({
-          text: "历史记录绑定已失效或 Topic 不匹配。",
+          text: this.text(
+            ctx,
+            "历史记录绑定已失效或 Topic 不匹配。",
+            "The history binding expired or the topic does not match.",
+          ),
           show_alert: true,
         });
         return;
@@ -665,31 +733,96 @@ export class TelegramFrontend {
     });
   }
 
-  private mainMenu(): Keyboard {
+  private commands(locale: BotLocale) {
+    const descriptions =
+      locale === "zh"
+        ? [
+            "开始与连接状态",
+            "重新显示按钮菜单",
+            "连接 T3 环境",
+            "列出 T3 环境",
+            "列出项目",
+            "新建 T3 项目",
+            "设置项目默认模型",
+            "新建并绑定 T3 线程",
+            "绑定已有 T3 线程",
+            "管理后台监听线程",
+            "查看当前线程历史记录",
+            "修改当前线程模型与权限",
+            "连接与能力状态",
+            "停止当前 turn",
+            "查看当前线程 diff",
+            "仅解除 Telegram 绑定",
+            "使用帮助",
+          ]
+        : [
+            "Start and connection status",
+            "Restore the button menu",
+            "Connect a T3 environment",
+            "List T3 environments",
+            "List projects",
+            "Create a T3 project",
+            "Set a project's default model",
+            "Create and attach a T3 thread",
+            "Attach an existing T3 thread",
+            "Manage background thread listeners",
+            "View current thread history",
+            "Change current thread model and permissions",
+            "Connection and capability status",
+            "Stop the current turn",
+            "View the current thread diff",
+            "Detach from Telegram only",
+            "Show help",
+          ];
+    const names = [
+      "start",
+      "menu",
+      "connect",
+      "environments",
+      "projects",
+      "newproject",
+      "models",
+      "new",
+      "attach",
+      "threads",
+      "history",
+      "threadsettings",
+      "status",
+      "stop",
+      "diff",
+      "detach",
+      "help",
+    ];
+    return names.map((command, index) => ({ command, description: descriptions[index]! }));
+  }
+
+  private mainMenu(locale: BotLocale): Keyboard {
+    const menu = MENUS[locale];
     return new Keyboard()
-      .text(MENU.newProject)
-      .text(MENU.projectModel)
+      .text(menu.newProject)
+      .text(menu.projectModel)
       .row()
-      .text(MENU.newThread)
-      .text(MENU.attach)
+      .text(menu.newThread)
+      .text(menu.attach)
       .row()
-      .text(MENU.backgroundThreads)
+      .text(menu.backgroundThreads)
       .row()
-      .text(MENU.history)
-      .text(MENU.threadSettings)
+      .text(menu.history)
+      .text(menu.threadSettings)
       .row()
-      .text(MENU.status)
+      .text(menu.status)
       .row()
-      .text(MENU.stop)
-      .text(MENU.diff)
+      .text(menu.stop)
+      .text(menu.diff)
       .row()
-      .text(MENU.environments)
-      .text(MENU.connect)
+      .text(menu.environments)
+      .text(menu.connect)
       .row()
-      .text(MENU.detach)
-      .text(MENU.clearSessions)
+      .text(menu.detach)
+      .text(menu.clearSessions)
       .row()
-      .text(MENU.help)
+      .text(menu.help)
+      .text(menu.language)
       .resized()
       .persistent();
   }
@@ -697,9 +830,14 @@ export class TelegramFrontend {
   private async restoreMainMenus(): Promise<void> {
     for (const telegramId of this.options.allowedUserIds) {
       try {
+        const locale = this.localeForTelegramUser(telegramId);
         await this.sendControlPanel(
           telegramId,
-          "🤖 T3 控制台已就绪。菜单操作固定在这里，不会再删除或改名当前 Topic。",
+          tr(
+            locale,
+            "🤖 T3 控制台已就绪。菜单操作固定在这里，不会再删除或改名当前 Topic。",
+            "🤖 T3 Console is ready. Menu actions stay here and will not delete or rename this topic.",
+          ),
           true,
         );
       } catch (error) {
@@ -725,18 +863,23 @@ export class TelegramFrontend {
         if (!this.isInvalidTopicError(error)) throw error;
       }
     }
-    const topic = await this.bot.api.createForumTopic(target, "🎛 T3 控制台");
+    const locale = this.localeForTelegramUser(chatId);
+    const topic = await this.bot.api.createForumTopic(
+      target,
+      tr(locale, "🎛 T3 控制台", "🎛 T3 Console"),
+    );
     const threadId = String(topic.message_thread_id);
     this.options.repository.saveTelegramControlTopic(chatId, threadId);
     return threadId;
   }
 
   private async sendControlPanel(chatId: string, text: string, silent = false): Promise<void> {
+    const locale = this.localeForTelegramUser(chatId);
     const threadId = await this.ensureControlTopic(chatId);
     await this.bot.api.sendMessage(chatTarget(chatId), text, {
       ...(threadId ? { message_thread_id: Number(threadId) } : {}),
       ...(silent ? { disable_notification: true } : {}),
-      reply_markup: this.mainMenu(),
+      reply_markup: this.mainMenu(locale),
     });
   }
 
@@ -761,9 +904,16 @@ export class TelegramFrontend {
 
   private async beginProjectCreation(ctx: Context): Promise<void> {
     this.pendingMenuActions.set(this.pendingMenuKey(ctx), { type: "project_title" });
-    await ctx.reply("请输入新项目名称。\n\n点击其他菜单项可取消创建。", {
-      reply_markup: this.mainMenu(),
-    });
+    await ctx.reply(
+      this.text(
+        ctx,
+        "请输入新项目名称。\n\n点击其他菜单项可取消创建。",
+        "Enter the new project name.\n\nTap another menu item to cancel.",
+      ),
+      {
+        reply_markup: this.mainMenu(this.locale(ctx)),
+      },
+    );
   }
 
   private async handlePendingMenuInput(ctx: Context, pending: PendingMenuAction): Promise<void> {
@@ -772,7 +922,11 @@ export class TelegramFrontend {
       const parsed = this.parseConnectionInput(input);
       if (!parsed) {
         await ctx.reply(
-          "格式不正确，请发送：\nhttp://T3主机:3773 PAIRING_TOKEN\n\n点击其他菜单项可取消连接。",
+          this.text(
+            ctx,
+            "格式不正确，请发送：\nhttp://T3主机:3773 PAIRING_TOKEN\n\n点击其他菜单项可取消连接。",
+            "Invalid format. Send:\nhttp://T3-HOST:3773 PAIRING_TOKEN\n\nTap another menu item to cancel.",
+          ),
         );
         return;
       }
@@ -783,7 +937,13 @@ export class TelegramFrontend {
 
     if (pending.type === "project_title") {
       if (!input || input.length > 200) {
-        await ctx.reply("项目名称不能为空，且不能超过 200 个字符。请重新输入。");
+        await ctx.reply(
+          this.text(
+            ctx,
+            "项目名称不能为空，且不能超过 200 个字符。请重新输入。",
+            "The project name must be 1–200 characters. Try again.",
+          ),
+        );
         return;
       }
       this.pendingMenuActions.set(this.pendingMenuKey(ctx), {
@@ -791,20 +951,36 @@ export class TelegramFrontend {
         title: input,
       });
       await ctx.reply(
-        "请输入工作区路径。该路径位于 T3 主机上；目录不存在时会自动创建。\n\n例如：/home/user/projects/my-app",
+        this.text(
+          ctx,
+          "请输入工作区路径。该路径位于 T3 主机上；目录不存在时会自动创建。\n\n例如：/home/user/projects/my-app",
+          "Enter the workspace path on the T3 host. A missing directory will be created.\n\nExample: /home/user/projects/my-app",
+        ),
       );
       return;
     }
 
     if (pending.type === "project_workspace") {
       if (!input || input.length > 4096) {
-        await ctx.reply("工作区路径不能为空，且不能超过 4096 个字符。请重新输入。");
+        await ctx.reply(
+          this.text(
+            ctx,
+            "工作区路径不能为空，且不能超过 4096 个字符。请重新输入。",
+            "The workspace path must be 1–4096 characters. Try again.",
+          ),
+        );
         return;
       }
       const environments = this.options.repository.listEnvironments(this.userId(ctx));
       if (environments.length === 0) {
         this.clearPendingMenuAction(ctx);
-        await ctx.reply("尚未连接 T3 环境，请先点击“🔌 连接 T3”。");
+        await ctx.reply(
+          this.text(
+            ctx,
+            "尚未连接 T3 环境，请先点击“🔌 连接 T3”。",
+            "No T3 environment is connected. Tap “🔌 Connect T3” first.",
+          ),
+        );
         return;
       }
       if (environments.length === 1) {
@@ -821,11 +997,24 @@ export class TelegramFrontend {
       for (const environment of environments) {
         keyboard.text(environment.name.slice(0, 50), `pc:${environment.id}`).row();
       }
-      await ctx.reply("选择在哪个 T3 环境创建项目：", { reply_markup: keyboard });
+      await ctx.reply(
+        this.text(
+          ctx,
+          "选择在哪个 T3 环境创建项目：",
+          "Choose the T3 environment for this project:",
+        ),
+        { reply_markup: keyboard },
+      );
       return;
     }
 
-    await ctx.reply("请选择上方的 T3 环境，或点击其他菜单项取消。");
+    await ctx.reply(
+      this.text(
+        ctx,
+        "请选择上方的 T3 环境，或点击其他菜单项取消。",
+        "Choose a T3 environment above, or tap another menu item to cancel.",
+      ),
+    );
   }
 
   private async createProject(
@@ -843,18 +1032,29 @@ export class TelegramFrontend {
         createWorkspaceRootIfMissing: true,
       });
       await ctx.reply(
-        [
-          `✅ 已创建 T3 项目：${project.title}`,
-          `工作区：${project.workspaceRoot ?? workspaceRoot}`,
-          "",
-          "下一步请选择项目默认模型，然后即可新建线程。",
-        ].join("\n"),
-        { reply_markup: this.mainMenu() },
+        this.text(
+          ctx,
+          [
+            `✅ 已创建 T3 项目：${project.title}`,
+            `工作区：${project.workspaceRoot ?? workspaceRoot}`,
+            "",
+            "下一步请选择项目默认模型，然后即可新建线程。",
+          ].join("\n"),
+          [
+            `✅ T3 project created: ${project.title}`,
+            `Workspace: ${project.workspaceRoot ?? workspaceRoot}`,
+            "",
+            "Choose the project's default model, then create a thread.",
+          ].join("\n"),
+        ),
+        { reply_markup: this.mainMenu(this.locale(ctx)) },
       );
       await this.showProjectModelProviders(ctx, project.id, environmentId);
     } catch (error) {
       this.logError(ctx, error, "project_create");
-      await ctx.reply(safeErrorMessage(error), { reply_markup: this.mainMenu() });
+      await ctx.reply(this.errorText(ctx, error), {
+        reply_markup: this.mainMenu(this.locale(ctx)),
+      });
     }
   }
 
@@ -867,7 +1067,7 @@ export class TelegramFrontend {
         for (const project of await this.options.backend.listProjects(environment.id)) {
           const current = project.defaultModelSelection
             ? ` · ${project.defaultModelSelection.model}`
-            : " · 未设置";
+            : this.text(ctx, " · 未设置", " · Not set");
           keyboard
             .text(
               `${environment.name} / ${project.title}${current}`.slice(0, 60),
@@ -877,12 +1077,23 @@ export class TelegramFrontend {
           count++;
         }
       }
-      await ctx.reply(count ? "选择要设置默认模型的项目：" : "当前没有可用项目。", {
-        ...(count ? { reply_markup: keyboard } : { reply_markup: this.mainMenu() }),
-      });
+      await ctx.reply(
+        count
+          ? this.text(
+              ctx,
+              "选择要设置默认模型的项目：",
+              "Choose a project to set its default model:",
+            )
+          : this.text(ctx, "当前没有可用项目。", "No projects are available."),
+        {
+          ...(count
+            ? { reply_markup: keyboard }
+            : { reply_markup: this.mainMenu(this.locale(ctx)) }),
+        },
+      );
     } catch (error) {
       this.logError(ctx, error, "model_projects");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -901,7 +1112,13 @@ export class TelegramFrontend {
           }
         : await this.findProject(ctx, projectId);
       if (!found?.project) {
-        await ctx.reply("项目尚未出现在 T3 快照中，请稍后点击“⚙️ 项目模型”重试。");
+        await ctx.reply(
+          this.text(
+            ctx,
+            "项目尚未出现在 T3 快照中，请稍后点击“⚙️ 项目模型”重试。",
+            "The project is not in the latest T3 snapshot yet. Try Project model again shortly.",
+          ),
+        );
         return;
       }
       const providers = (await this.options.backend.listModelProviders(found.environmentId)).filter(
@@ -912,7 +1129,13 @@ export class TelegramFrontend {
           provider.models.length > 0,
       );
       if (!providers.length) {
-        await ctx.reply("T3 当前没有已启用且可用的模型 Provider。");
+        await ctx.reply(
+          this.text(
+            ctx,
+            "T3 当前没有已启用且可用的模型 Provider。",
+            "T3 has no enabled, ready model provider.",
+          ),
+        );
         return;
       }
       const keyboard = new InlineKeyboard();
@@ -921,18 +1144,29 @@ export class TelegramFrontend {
           found.project!.defaultModelSelection?.instanceId === provider.instanceId ? "✅ " : "";
         keyboard
           .text(
-            `${selected}${provider.displayName} · ${provider.models.length} 个模型`.slice(0, 60),
+            this.text(
+              ctx,
+              `${selected}${provider.displayName} · ${provider.models.length} 个模型`,
+              `${selected}${provider.displayName} · ${provider.models.length} models`,
+            ).slice(0, 60),
             `mpp:${projectId}:${index}`,
           )
           .row();
       });
+      const current = found.project.defaultModelSelection
+        ? `${found.project.defaultModelSelection.instanceId} / ${found.project.defaultModelSelection.model}`
+        : this.text(ctx, "未设置", "Not set");
       await ctx.reply(
-        `⚙️ ${found.project.title}\n当前默认模型：${found.project.defaultModelSelection ? `${found.project.defaultModelSelection.instanceId} / ${found.project.defaultModelSelection.model}` : "未设置"}\n\n请选择 Provider：`,
+        this.text(
+          ctx,
+          `⚙️ ${found.project.title}\n当前默认模型：${current}\n\n请选择 Provider：`,
+          `⚙️ ${found.project.title}\nCurrent default model: ${current}\n\nChoose a provider:`,
+        ),
         { reply_markup: keyboard },
       );
     } catch (error) {
       this.logError(ctx, error, "model_providers");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -973,7 +1207,7 @@ export class TelegramFrontend {
           found.project.defaultModelSelection.model === model.slug;
         keyboard
           .text(
-            `${selected ? "✅ " : model.isDefault ? "⭐ " : ""}${model.name}${model.isLegacy ? " · 旧版" : ""}`.slice(
+            `${selected ? "✅ " : model.isDefault ? "⭐ " : ""}${model.name}${model.isLegacy ? this.text(ctx, " · 旧版", " · Legacy") : ""}`.slice(
               0,
               60,
             ),
@@ -983,21 +1217,25 @@ export class TelegramFrontend {
       });
       if (safeOffset > 0)
         keyboard.text(
-          "⬅️ 上一页",
+          this.text(ctx, "⬅️ 上一页", "⬅️ Previous"),
           `mpl:${projectId}:${providerIndex}:${Math.max(0, safeOffset - MODEL_PAGE_SIZE)}`,
         );
       if (safeOffset + MODEL_PAGE_SIZE < provider.models.length)
         keyboard.text(
-          "下一页 ➡️",
+          this.text(ctx, "下一页 ➡️", "Next ➡️"),
           `mpl:${projectId}:${providerIndex}:${safeOffset + MODEL_PAGE_SIZE}`,
         );
       keyboard.row().text("↩️ Provider", `mp:${projectId}`);
-      const text = `⚙️ ${found.project.title}\n${provider.displayName} · ${safeOffset + 1}–${Math.min(safeOffset + MODEL_PAGE_SIZE, provider.models.length)} / ${provider.models.length}\n\n请选择默认模型：`;
+      const text = this.text(
+        ctx,
+        `⚙️ ${found.project.title}\n${provider.displayName} · ${safeOffset + 1}–${Math.min(safeOffset + MODEL_PAGE_SIZE, provider.models.length)} / ${provider.models.length}\n\n请选择默认模型：`,
+        `⚙️ ${found.project.title}\n${provider.displayName} · ${safeOffset + 1}–${Math.min(safeOffset + MODEL_PAGE_SIZE, provider.models.length)} / ${provider.models.length}\n\nChoose the default model:`,
+      );
       if (edit) await ctx.editMessageText(text, { reply_markup: keyboard });
       else await ctx.reply(text, { reply_markup: keyboard });
     } catch (error) {
       this.logError(ctx, error, "provider_models");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -1030,44 +1268,71 @@ export class TelegramFrontend {
         projectId,
         modelSelection: { instanceId: provider.instanceId, model: model.slug },
       });
-      await ctx.answerCallbackQuery({ text: "默认模型已保存" });
+      await ctx.answerCallbackQuery({
+        text: this.text(ctx, "默认模型已保存", "Default model saved"),
+      });
       await ctx.editMessageText(
-        `✅ 已设置项目默认模型\n\n项目：${found.project.title}\nProvider：${provider.displayName}\n模型：${model.name} (${model.slug})`,
+        this.text(
+          ctx,
+          `✅ 已设置项目默认模型\n\n项目：${found.project.title}\nProvider：${provider.displayName}\n模型：${model.name} (${model.slug})`,
+          `✅ Project default model set\n\nProject: ${found.project.title}\nProvider: ${provider.displayName}\nModel: ${model.name} (${model.slug})`,
+        ),
         {
           reply_markup: new InlineKeyboard()
-            .text("➕ 新建线程", `np:${projectId}`)
+            .text(this.menu(ctx, "newThread"), `np:${projectId}`)
             .row()
-            .text("⚙️ 更换模型", `mp:${projectId}`),
+            .text(this.text(ctx, "⚙️ 更换模型", "⚙️ Change model"), `mp:${projectId}`),
         },
       );
     } catch (error) {
       this.logError(ctx, error, "set_project_model");
-      await ctx.answerCallbackQuery({ text: safeErrorMessage(error), show_alert: true });
+      await ctx.answerCallbackQuery({ text: this.errorText(ctx, error), show_alert: true });
     }
   }
 
   private async showHelp(ctx: Context): Promise<void> {
     this.clearPendingMenuAction(ctx);
     await ctx.reply(
-      [
-        "使用下方菜单即可完成主要操作：",
-        "🗂 新建项目 — 在 T3 主机创建工作区项目",
-        "⚙️ 项目模型 — 为项目设置或更换默认 Provider/模型",
-        "➕ 新建线程 — 选择项目并创建线程",
-        "🔗 绑定线程 — 继续已有 T3 线程",
-        "🧵 后台线程 — 查看所有监听并切换默认输入线程",
-        "📜 历史记录 — 分页查看当前 T3 线程的用户与助手消息",
-        "🛠 线程设置 — 修改当前线程的模型和运行权限",
-        "🧹 清除会话 — 清除所有线程 Topic 和网关绑定，保留 T3 数据与控制台",
-        "📊 状态 — 查看连接、绑定和能力",
-        "⏹ 停止 — 中断当前 turn",
-        "🧾 Diff — 查看文件变更摘要",
-        "",
-        "绑定线程后，普通文本会直接发送到当前 T3 线程。切换只改变输入目标，所有保留的绑定都会在后台继续监听。",
-        "启用 Telegram 私聊 Topics 后，每个 T3 线程会使用独立 Topic；未启用时，后台回复会带线程名前缀。",
-        "斜杠命令仍保留作备用入口。",
-      ].join("\n"),
-      { reply_markup: this.mainMenu() },
+      this.text(
+        ctx,
+        [
+          "使用下方菜单即可完成主要操作：",
+          "🗂 新建项目 — 在 T3 主机创建工作区项目",
+          "⚙️ 项目模型 — 为项目设置或更换默认 Provider/模型",
+          "➕ 新建线程 — 选择项目并创建线程",
+          "🔗 绑定线程 — 继续已有 T3 线程",
+          "🧵 后台线程 — 查看所有监听并切换默认输入线程",
+          "📜 历史记录 — 分页查看当前 T3 线程的用户与助手消息",
+          "🛠 线程设置 — 修改当前线程的模型和运行权限",
+          "🧹 清除会话 — 清除线程 Topic 和网关绑定，保留 T3 数据与控制台",
+          "📊 状态 — 查看连接、绑定和能力",
+          "⏹ 停止 — 中断当前 turn",
+          "🧾 Diff — 查看文件变更摘要",
+          "🌐 English — 切换界面语言",
+          "",
+          "绑定线程后，普通文本会直接发送到当前 T3 线程。所有保留的绑定都会在后台继续监听。",
+          "启用 Telegram 私聊 Topics 后，每个 T3 线程会使用独立 Topic。斜杠命令仍保留作备用入口。",
+        ].join("\n"),
+        [
+          "Use the menu below for the main actions:",
+          "🗂 New project — create a workspace project on the T3 host",
+          "⚙️ Project model — set or change a project's default provider/model",
+          "➕ New thread — choose a project and create a thread",
+          "🔗 Attach thread — continue an existing T3 thread",
+          "🧵 Background threads — view listeners and change the default input",
+          "📜 History — page through user and assistant messages",
+          "🛠 Thread settings — change the thread model and runtime permissions",
+          "🧹 Clear sessions — clear thread topics/bindings while keeping T3 data",
+          "📊 Status — inspect connections, bindings, and capabilities",
+          "⏹ Stop — interrupt the current turn",
+          "🧾 Diff — view the file-change summary",
+          "🌐 中文 — switch interface language",
+          "",
+          "After attaching, normal text is sent to the current T3 thread. Every retained binding continues listening in the background.",
+          "With Telegram private Topics enabled, each T3 thread has its own topic. Slash commands remain available as a fallback.",
+        ].join("\n"),
+      ),
+      { reply_markup: this.mainMenu(this.locale(ctx)) },
     );
   }
 
@@ -1092,8 +1357,12 @@ export class TelegramFrontend {
     if (!parsed) {
       this.pendingMenuActions.set(this.pendingMenuKey(ctx), { type: "connect" });
       await ctx.reply(
-        "请发送：\nhttp://T3主机:3773 PAIRING_TOKEN\n\n可在 T3 主机运行 `npx t3 pair` 获取一次性 token。",
-        { reply_markup: this.mainMenu() },
+        this.text(
+          ctx,
+          "请发送：\nhttp://T3主机:3773 PAIRING_TOKEN\n\n可在 T3 主机运行 `npx t3 pair` 获取一次性 token。",
+          "Send:\nhttp://T3-HOST:3773 PAIRING_TOKEN\n\nRun `npx t3 pair` on the T3 host to get a one-time token.",
+        ),
+        { reply_markup: this.mainMenu(this.locale(ctx)) },
       );
       return;
     }
@@ -1104,7 +1373,11 @@ export class TelegramFrontend {
       .catch(() => false);
     const deletionWarning = tokenMessageDeleted
       ? ""
-      : "\n⚠️ 无法删除含 pairing token 的消息，请手动删除。";
+      : this.text(
+          ctx,
+          "\n⚠️ 无法删除含 pairing token 的消息，请手动删除。",
+          "\n⚠️ The message containing the pairing token could not be deleted. Delete it manually.",
+        );
     try {
       const result = await this.options.connector.pair({
         userId: this.userId(ctx),
@@ -1116,14 +1389,22 @@ export class TelegramFrontend {
       await ctx.api.sendMessage(
         ctx.chat!.id,
         online
-          ? `✅ 已连接 ${result.environment.name}（T3 ${result.environment.serverVersion ?? "未知版本"}）${deletionWarning}`
-          : `⚠️ 环境凭据已保存，但当前状态为 ${result.status.state}。请点击“📊 状态”检查。${deletionWarning}`,
-        { reply_markup: this.mainMenu() },
+          ? this.text(
+              ctx,
+              `✅ 已连接 ${result.environment.name}（T3 ${result.environment.serverVersion ?? "未知版本"}）${deletionWarning}`,
+              `✅ Connected to ${result.environment.name} (T3 ${result.environment.serverVersion ?? "unknown version"})${deletionWarning}`,
+            )
+          : this.text(
+              ctx,
+              `⚠️ 环境凭据已保存，但当前状态为 ${result.status.state}。请点击“📊 状态”检查。${deletionWarning}`,
+              `⚠️ Credentials were saved, but the environment is ${result.status.state}. Check Status.${deletionWarning}`,
+            ),
+        { reply_markup: this.mainMenu(this.locale(ctx)) },
       );
     } catch (error) {
       this.logError(ctx, error, "connect");
-      await ctx.api.sendMessage(ctx.chat!.id, `${safeErrorMessage(error)}${deletionWarning}`, {
-        reply_markup: this.mainMenu(),
+      await ctx.api.sendMessage(ctx.chat!.id, `${this.errorText(ctx, error)}${deletionWarning}`, {
+        reply_markup: this.mainMenu(this.locale(ctx)),
       });
     }
   }
@@ -1132,9 +1413,16 @@ export class TelegramFrontend {
     this.clearPendingMenuAction(ctx);
     const environments = this.options.repository.listEnvironments(this.userId(ctx));
     if (!environments.length) {
-      await ctx.reply("尚未连接 T3 环境。点击“🔌 连接 T3”。", {
-        reply_markup: this.mainMenu(),
-      });
+      await ctx.reply(
+        this.text(
+          ctx,
+          "尚未连接 T3 环境。点击“🔌 连接 T3”。",
+          "No T3 environment is connected. Tap “🔌 Connect T3”.",
+        ),
+        {
+          reply_markup: this.mainMenu(this.locale(ctx)),
+        },
+      );
       return;
     }
     await ctx.reply(
@@ -1144,7 +1432,7 @@ export class TelegramFrontend {
             `${env.status === "connected" ? "🟢" : "⚪️"} ${env.name} · ${shortId(env.id)} · T3 ${env.serverVersion ?? "?"}`,
         )
         .join("\n"),
-      { reply_markup: this.mainMenu() },
+      { reply_markup: this.mainMenu(this.locale(ctx)) },
     );
   }
 
@@ -1156,9 +1444,18 @@ export class TelegramFrontend {
       messageThreadId(ctx),
     );
     if (removed) this.subscriptionManager.sync();
-    await ctx.reply(removed ? "已解除 Telegram 绑定；T3 线程未被修改。" : "当前没有绑定。", {
-      reply_markup: this.mainMenu(),
-    });
+    await ctx.reply(
+      removed
+        ? this.text(
+            ctx,
+            "已解除 Telegram 绑定；T3 线程未被修改。",
+            "Telegram binding detached; the T3 thread was not changed.",
+          )
+        : this.text(ctx, "当前没有绑定。", "There is no current binding."),
+      {
+        reply_markup: this.mainMenu(this.locale(ctx)),
+      },
+    );
   }
 
   private async beginClearSessions(ctx: Context): Promise<void> {
@@ -1169,9 +1466,16 @@ export class TelegramFrontend {
       .listBindings(userId)
       .filter((binding) => binding.telegramChatId === chatId);
     if (!bindings.length) {
-      await ctx.reply("当前没有可清除的线程会话；T3 控制台会继续保留。", {
-        reply_markup: this.mainMenu(),
-      });
+      await ctx.reply(
+        this.text(
+          ctx,
+          "当前没有可清除的线程会话；T3 控制台会继续保留。",
+          "There are no thread sessions to clear. The T3 Console remains available.",
+        ),
+        {
+          reply_markup: this.mainMenu(this.locale(ctx)),
+        },
+      );
       return;
     }
 
@@ -1191,25 +1495,40 @@ export class TelegramFrontend {
     ).size;
     const flatCount = bindings.length - topicCount;
     await ctx.reply(
-      [
-        "⚠️ 确认清除所有 Telegram 会话记录？",
-        "",
-        `将解除 ${bindings.length} 个网关绑定，并删除 ${topicCount} 个线程 Topic 及其中的消息。`,
-        ...(flatCount
-          ? [
-              `另有 ${flatCount} 个非 Topic 绑定只能解除；Telegram 不允许机器人单独清空普通私聊消息。`,
-            ]
-          : []),
-        "",
-        "会保留：🎛 T3 控制台、T3 真实线程、项目、代码和环境连接。之后仍可重新绑定原线程。",
-        "",
-        "此操作不可恢复，确认按钮将在 10 分钟后失效。",
-      ].join("\n"),
+      this.text(
+        ctx,
+        [
+          "⚠️ 确认清除所有 Telegram 会话记录？",
+          "",
+          `将解除 ${bindings.length} 个网关绑定，并删除 ${topicCount} 个线程 Topic 及其中的消息。`,
+          ...(flatCount
+            ? [`另有 ${flatCount} 个非 Topic 绑定只能解除；普通私聊消息无法由机器人清空。`]
+            : []),
+          "",
+          "会保留：🎛 T3 控制台、T3 真实线程、项目、代码和环境连接。之后仍可重新绑定原线程。",
+          "",
+          "此操作不可恢复，确认按钮将在 10 分钟后失效。",
+        ].join("\n"),
+        [
+          "⚠️ Clear all Telegram session history?",
+          "",
+          `This detaches ${bindings.length} gateway binding(s) and deletes ${topicCount} thread topic(s) with their messages.`,
+          ...(flatCount
+            ? [
+                `Another ${flatCount} non-topic binding(s) can only be detached; bots cannot clear regular private-chat messages.`,
+              ]
+            : []),
+          "",
+          "Kept: 🎛 T3 Console, real T3 threads, projects, code, and environment connections. Threads can be attached again.",
+          "",
+          "This cannot be undone. The confirmation expires in 10 minutes.",
+        ].join("\n"),
+      ),
       {
         reply_markup: new InlineKeyboard()
-          .text("确认清除全部会话", `cac:${confirmationId}`)
+          .text(this.text(ctx, "确认清除全部会话", "Clear all sessions"), `cac:${confirmationId}`)
           .row()
-          .text("取消", `cax:${confirmationId}`),
+          .text(this.text(ctx, "取消", "Cancel"), `cax:${confirmationId}`),
       },
     );
   }
@@ -1226,7 +1545,11 @@ export class TelegramFrontend {
     ) {
       this.pendingSessionClears.delete(confirmationId);
       await ctx.answerCallbackQuery({
-        text: "清理确认已失效，请重新点击“🧹 清除会话”。",
+        text: this.text(
+          ctx,
+          "清理确认已失效，请重新点击“🧹 清除会话”。",
+          "The confirmation expired. Tap Clear sessions again.",
+        ),
         show_alert: true,
       });
       return;
@@ -1238,12 +1561,22 @@ export class TelegramFrontend {
       return binding?.userId === userId && binding.telegramChatId === chatId ? [binding] : [];
     });
     if (!bindings.length) {
-      await ctx.answerCallbackQuery({ text: "这些会话已经清除。" });
-      await ctx.editMessageText("✅ 会话已经清除；T3 控制台仍然保留。");
+      await ctx.answerCallbackQuery({
+        text: this.text(ctx, "这些会话已经清除。", "These sessions are already cleared."),
+      });
+      await ctx.editMessageText(
+        this.text(
+          ctx,
+          "✅ 会话已经清除；T3 控制台仍然保留。",
+          "✅ Sessions cleared; the T3 Console remains available.",
+        ),
+      );
       return;
     }
 
-    await ctx.answerCallbackQuery({ text: "正在逐个清除会话…" });
+    await ctx.answerCallbackQuery({
+      text: this.text(ctx, "正在逐个清除会话…", "Clearing sessions…"),
+    });
     let removedBindings = 0;
     for (const binding of bindings) {
       if (this.options.repository.removeBindingById(userId, chatId, binding.id)) {
@@ -1285,17 +1618,35 @@ export class TelegramFrontend {
     }
 
     await ctx.editMessageText(
-      [
-        failedTopics ? "⚠️ 会话绑定已清除，但部分 Topic 删除失败。" : "✅ 所有会话已清除。",
-        "",
-        `已解除绑定：${removedBindings}`,
-        `已删除线程 Topic：${deletedTopics}`,
-        ...(failedTopics
-          ? [`删除失败：${failedTopics}（已停止监听，可在 Telegram 中手动删除）`]
-          : []),
-        "",
-        "🎛 T3 控制台及 T3 中的线程、项目和代码均已保留。",
-      ].join("\n"),
+      this.text(
+        ctx,
+        [
+          failedTopics ? "⚠️ 会话绑定已清除，但部分 Topic 删除失败。" : "✅ 所有会话已清除。",
+          "",
+          `已解除绑定：${removedBindings}`,
+          `已删除线程 Topic：${deletedTopics}`,
+          ...(failedTopics
+            ? [`删除失败：${failedTopics}（已停止监听，可在 Telegram 中手动删除）`]
+            : []),
+          "",
+          "🎛 T3 控制台及 T3 中的线程、项目和代码均已保留。",
+        ].join("\n"),
+        [
+          failedTopics
+            ? "⚠️ Session bindings were cleared, but some topics could not be deleted."
+            : "✅ All sessions cleared.",
+          "",
+          `Bindings detached: ${removedBindings}`,
+          `Thread topics deleted: ${deletedTopics}`,
+          ...(failedTopics
+            ? [
+                `Failed deletions: ${failedTopics} (listeners stopped; delete them manually in Telegram)`,
+              ]
+            : []),
+          "",
+          "🎛 The T3 Console and all T3 threads, projects, and code were kept.",
+        ].join("\n"),
+      ),
     );
   }
 
@@ -1331,12 +1682,22 @@ export class TelegramFrontend {
         }
       }
       await ctx.reply(
-        count ? "选择项目以创建真实 T3 线程：" : "没有可用项目。请先检查 /status。",
+        count
+          ? this.text(
+              ctx,
+              "选择项目以创建真实 T3 线程：",
+              "Choose a project to create a T3 thread:",
+            )
+          : this.text(
+              ctx,
+              "没有可用项目。请先检查 /status。",
+              "No projects are available. Check /status first.",
+            ),
         count ? { reply_markup: keyboard } : {},
       );
     } catch (error) {
       this.logError(ctx, error, "projects");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -1344,7 +1705,14 @@ export class TelegramFrontend {
     this.clearPendingMenuAction(ctx);
     try {
       const found = await this.findProjectEnvironment(ctx, projectId);
-      if (!found) return void (await ctx.reply("找不到所选项目，请重新执行 /projects。"));
+      if (!found)
+        return void (await ctx.reply(
+          this.text(
+            ctx,
+            "找不到所选项目，请重新执行 /projects。",
+            "Project not found. Run /projects again.",
+          ),
+        ));
       await this.requireCapability(found.environmentId, "threadCreate", "新建线程");
       const title = `Telegram ${new Date().toISOString().slice(0, 16).replace("T", " ")}`;
       const thread = await this.options.backend.createThread({
@@ -1367,13 +1735,17 @@ export class TelegramFrontend {
       this.subscriptionManager.sync();
       await ctx.api.sendMessage(
         ctx.chat!.id,
-        `✅ 已创建并绑定：${compactThreadName(thread)}\n现在直接发送编码指令即可。`,
+        this.text(
+          ctx,
+          `✅ 已创建并绑定：${compactThreadName(thread)}\n现在直接发送编码指令即可。`,
+          `✅ Created and attached: ${compactThreadName(thread)}\nSend a coding instruction here.`,
+        ),
         telegramThreadId ? { message_thread_id: Number(telegramThreadId) } : {},
       );
       await this.deleteNavigationMessage(ctx);
     } catch (error) {
       this.logError(ctx, error, "new_thread");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -1397,12 +1769,18 @@ export class TelegramFrontend {
         }
       }
       await ctx.reply(
-        count ? "选择要绑定的现有 T3 线程（不会克隆）：" : "没有找到线程。",
+        count
+          ? this.text(
+              ctx,
+              "选择要绑定的现有 T3 线程（不会克隆）：",
+              "Choose an existing T3 thread to attach (it will not be cloned):",
+            )
+          : this.text(ctx, "没有找到线程。", "No threads found."),
         count ? { reply_markup: keyboard } : {},
       );
     } catch (error) {
       this.logError(ctx, error, "attach_list");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -1422,7 +1800,14 @@ export class TelegramFrontend {
           break;
         }
       }
-      if (!found) return void (await ctx.reply("该线程已不存在或已归档，请重新执行 /attach。"));
+      if (!found)
+        return void (await ctx.reply(
+          this.text(
+            ctx,
+            "该线程已不存在或已归档，请重新执行 /attach。",
+            "That thread no longer exists or is archived. Run /attach again.",
+          ),
+        ));
       const existingBinding = this.options.repository.findBindingForTarget(
         this.userId(ctx),
         String(ctx.chat!.id),
@@ -1443,7 +1828,11 @@ export class TelegramFrontend {
         this.subscriptionManager.sync();
         await ctx.api.sendMessage(
           ctx.chat!.id,
-          `✅ 该 T3 线程已经绑定，已复用原 Topic：${compactThreadName(found.thread)}`,
+          this.text(
+            ctx,
+            `✅ 该 T3 线程已经绑定，已复用原 Topic：${compactThreadName(found.thread)}`,
+            `✅ This T3 thread was already attached; reusing its topic: ${compactThreadName(found.thread)}`,
+          ),
           destination.telegramThreadId
             ? { message_thread_id: Number(destination.telegramThreadId) }
             : {},
@@ -1465,13 +1854,17 @@ export class TelegramFrontend {
       this.subscriptionManager.sync();
       await ctx.api.sendMessage(
         ctx.chat!.id,
-        `✅ 已绑定同一个 T3 线程：${compactThreadName(found.thread)}`,
+        this.text(
+          ctx,
+          `✅ 已绑定同一个 T3 线程：${compactThreadName(found.thread)}`,
+          `✅ Attached to the same T3 thread: ${compactThreadName(found.thread)}`,
+        ),
         telegramThreadId ? { message_thread_id: Number(telegramThreadId) } : {},
       );
       await this.deleteNavigationMessage(ctx);
     } catch (error) {
       this.logError(ctx, error, "attach");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -1480,22 +1873,41 @@ export class TelegramFrontend {
     const userId = this.userId(ctx);
     const binding = this.binding(ctx);
     const environments = this.options.repository.listEnvironments(userId);
-    if (!environments.length) return void (await ctx.reply("尚未配置环境。使用 /connect。"));
+    if (!environments.length)
+      return void (await ctx.reply(
+        this.text(
+          ctx,
+          "尚未配置环境。使用 /connect。",
+          "No environment is configured. Use /connect.",
+        ),
+      ));
     const blocks: string[] = [];
     for (const environment of environments) {
       const status = await this.options.backend.connect(environment.id);
       const capabilities = await this.options.backend.getCapabilities(environment.id);
       blocks.push(
-        `${environment.name} · T3 ${environment.serverVersion ?? "?"}\n状态：${status.state}\n${renderCapabilities(capabilities)}`,
+        this.text(
+          ctx,
+          `${environment.name} · T3 ${environment.serverVersion ?? "?"}\n状态：${status.state}\n${renderCapabilities(capabilities)}`,
+          `${environment.name} · T3 ${environment.serverVersion ?? "?"}\nStatus: ${status.state}\n${renderCapabilities(capabilities, "en")}`,
+        ),
       );
     }
     if (binding)
       blocks.unshift(
-        `当前线程：${binding.displayName ?? binding.t3ThreadId} · ${shortId(binding.t3ThreadId)}\n后台监听：${this.options.repository.listBindings(userId).length} 个绑定 / ${this.subscriptionManager.activeCount()} 个 T3 线程`,
+        this.text(
+          ctx,
+          `当前线程：${binding.displayName ?? binding.t3ThreadId} · ${shortId(binding.t3ThreadId)}\n后台监听：${this.options.repository.listBindings(userId).length} 个绑定 / ${this.subscriptionManager.activeCount()} 个 T3 线程`,
+          `Current thread: ${binding.displayName ?? binding.t3ThreadId} · ${shortId(binding.t3ThreadId)}\nBackground listeners: ${this.options.repository.listBindings(userId).length} binding(s) / ${this.subscriptionManager.activeCount()} T3 thread(s)`,
+        ),
       );
     else
       blocks.unshift(
-        `当前没有输入线程；后台仍监听 ${this.options.repository.listBindings(userId).length} 个绑定。`,
+        this.text(
+          ctx,
+          `当前没有输入线程；后台仍监听 ${this.options.repository.listBindings(userId).length} 个绑定。`,
+          `No current input thread; ${this.options.repository.listBindings(userId).length} binding(s) are still monitored in the background.`,
+        ),
       );
     await ctx.reply(blocks.join("\n\n"));
   }
@@ -1510,10 +1922,14 @@ export class TelegramFrontend {
     if (!bindings.length) {
       const text = [
         ...(notice ? [notice, ""] : []),
-        "当前没有后台监听线程。请使用“➕ 新建线程”或“🔗 绑定线程”。",
+        this.text(
+          ctx,
+          "当前没有后台监听线程。请使用“➕ 新建线程”或“🔗 绑定线程”。",
+          "No threads are being monitored. Use New thread or Attach thread.",
+        ),
       ].join("\n");
       if (edit) await ctx.editMessageText(text, { reply_markup: new InlineKeyboard() });
-      else await ctx.reply(text, { reply_markup: this.mainMenu() });
+      else await ctx.reply(text, { reply_markup: this.mainMenu(this.locale(ctx)) });
       return;
     }
 
@@ -1532,20 +1948,34 @@ export class TelegramFrontend {
           `${marker} ${binding.displayName ?? shortId(binding.t3ThreadId)}`.slice(0, 60),
           `sb:${binding.id}`,
         )
-        .text("🔓 解除", `bd:${binding.id}`)
+        .text(this.text(ctx, "🔓 解除", "🔓 Detach"), `bd:${binding.id}`)
         .row();
     }
-    const text = [
-      ...(notice ? [notice, ""] : []),
-      `后台正在监听 ${bindings.length} 个绑定。`,
-      this.topicsEnabled
-        ? "📍 表示当前所在 Topic；点击线程会向目标 Topic 发送一条定位消息。"
-        : "✅ 表示普通聊天里的默认输入线程。",
-      this.topicsEnabled
-        ? "请进入目标 Topic 后发送指令；“全部 / All”页的输入不会路由，以免串线。"
-        : "点击线程可将它设为默认输入目标，切换不会停止其他监听。",
-      "点击右侧“🔓 解除”可停止该绑定的后台监听；不会删除 T3 线程。",
-    ].join("\n");
+    const text = this.text(
+      ctx,
+      [
+        ...(notice ? [notice, ""] : []),
+        `后台正在监听 ${bindings.length} 个绑定。`,
+        this.topicsEnabled
+          ? "📍 表示当前所在 Topic；点击线程会向目标 Topic 发送一条定位消息。"
+          : "✅ 表示普通聊天里的默认输入线程。",
+        this.topicsEnabled
+          ? "请进入目标 Topic 后发送指令；“全部 / All”页的输入不会路由，以免串线。"
+          : "点击线程可将它设为默认输入目标，切换不会停止其他监听。",
+        "点击右侧“🔓 解除”可停止该绑定的后台监听；不会删除 T3 线程。",
+      ].join("\n"),
+      [
+        ...(notice ? [notice, ""] : []),
+        `${bindings.length} binding(s) are monitored in the background.`,
+        this.topicsEnabled
+          ? "📍 marks the current topic; tapping a thread sends a locator to its topic."
+          : "✅ marks the default input thread in a regular chat.",
+        this.topicsEnabled
+          ? "Open the target topic before sending instructions. Input on the All page is not routed to prevent cross-thread delivery."
+          : "Tap a thread to make it the default input target. Other listeners keep running.",
+        "Tap Detach on the right to stop that listener without deleting the T3 thread.",
+      ].join("\n"),
+    );
     if (edit) await ctx.editMessageText(text, { reply_markup: keyboard });
     else await ctx.reply(text, { reply_markup: keyboard });
   }
@@ -1561,7 +1991,7 @@ export class TelegramFrontend {
       binding.telegramChatId !== String(ctx.chat!.id)
     ) {
       await ctx.answerCallbackQuery({
-        text: "绑定已不存在或无权管理。",
+        text: this.text(ctx, "绑定已不存在或无权管理。", "Binding not found or inaccessible."),
         show_alert: true,
       });
       return undefined;
@@ -1572,20 +2002,30 @@ export class TelegramFrontend {
   private async stopTurn(ctx: Context): Promise<void> {
     this.clearPendingMenuAction(ctx);
     const binding = this.binding(ctx);
-    if (!binding) return void (await ctx.reply("当前没有绑定 T3 线程。"));
+    if (!binding)
+      return void (await ctx.reply(
+        this.text(ctx, "当前没有绑定 T3 线程。", "No T3 thread is attached here."),
+      ));
     try {
       const result = await interruptBoundTurn(this.options.backend, binding);
-      await ctx.reply(result === "interrupted" ? "⏹ 已向 T3 发出中断请求。" : "该 turn 已结束。");
+      await ctx.reply(
+        result === "interrupted"
+          ? this.text(ctx, "⏹ 已向 T3 发出中断请求。", "⏹ Interrupt request sent to T3.")
+          : this.text(ctx, "该 turn 已结束。", "The turn has already ended."),
+      );
     } catch (error) {
       this.logError(ctx, error, "stop");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
   private async showDiff(ctx: Context): Promise<void> {
     this.clearPendingMenuAction(ctx);
     const binding = this.binding(ctx);
-    if (!binding) return void (await ctx.reply("当前没有绑定 T3 线程。"));
+    if (!binding)
+      return void (await ctx.reply(
+        this.text(ctx, "当前没有绑定 T3 线程。", "No T3 thread is attached here."),
+      ));
     try {
       await this.requireCapability(binding.environmentId, "diffThread", "Diff");
       const diff = await this.options.backend.getThreadDiff({
@@ -1593,11 +2033,11 @@ export class TelegramFrontend {
         threadId: binding.t3ThreadId,
       });
       await ctx.reply(
-        `${binding.displayName ? `[${binding.displayName}]\n` : ""}${renderDiffSummary(diff)}`,
+        `${binding.displayName ? `[${binding.displayName}]\n` : ""}${renderDiffSummary(diff, this.locale(ctx))}`,
       );
     } catch (error) {
       this.logError(ctx, error, "diff");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -1609,7 +2049,13 @@ export class TelegramFrontend {
     this.clearPendingMenuAction(ctx);
     const binding = suppliedBinding ?? this.binding(ctx);
     if (!binding) {
-      await ctx.reply("请进入已经绑定的线程 Topic，再点击“🛠 线程设置”或发送 /threadsettings。");
+      await ctx.reply(
+        this.text(
+          ctx,
+          "请进入已经绑定的线程 Topic，再点击“🛠 线程设置”或发送 /threadsettings。",
+          "Open an attached thread topic, then tap Thread settings or send /threadsettings.",
+        ),
+      );
       return;
     }
     try {
@@ -1617,23 +2063,34 @@ export class TelegramFrontend {
       const mode = RUNTIME_MODES.find((item) => item.value === thread.runtimeMode);
       const model = thread.modelSelection
         ? `${thread.modelSelection.instanceId} / ${thread.modelSelection.model}`
-        : "未记录";
-      const text = [
-        `🛠 ${binding.displayName ?? thread.title}`,
-        `模型：${model}`,
-        `权限：${mode?.label ?? thread.runtimeMode ?? "未知"}`,
-        "",
-        "设置会从下一条指令开始生效；正在运行的 turn 不会被打断。",
-      ].join("\n");
+        : this.text(ctx, "未记录", "Not recorded");
+      const locale = this.locale(ctx);
+      const text = this.text(
+        ctx,
+        [
+          `🛠 ${binding.displayName ?? thread.title}`,
+          `模型：${model}`,
+          `权限：${mode?.label.zh ?? thread.runtimeMode ?? "未知"}`,
+          "",
+          "设置会从下一条指令开始生效；正在运行的 turn 不会被打断。",
+        ].join("\n"),
+        [
+          `🛠 ${binding.displayName ?? thread.title}`,
+          `Model: ${model}`,
+          `Permissions: ${mode?.label.en ?? thread.runtimeMode ?? "Unknown"}`,
+          "",
+          "Settings take effect with the next instruction; a running turn is not interrupted.",
+        ].join("\n"),
+      );
       const keyboard = new InlineKeyboard()
-        .text("🤖 修改模型", `tm:${binding.id}`)
+        .text(tr(locale, "🤖 修改模型", "🤖 Change model"), `tm:${binding.id}`)
         .row()
-        .text("🔐 修改权限", `tr:${binding.id}`);
+        .text(tr(locale, "🔐 修改权限", "🔐 Change permissions"), `tr:${binding.id}`);
       if (edit) await ctx.editMessageText(text, { reply_markup: keyboard });
       else await ctx.reply(text, { reply_markup: keyboard });
     } catch (error) {
       this.logError(ctx, error, "thread_settings");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -1646,36 +2103,46 @@ export class TelegramFrontend {
       const thread = await this.findBoundThread(binding);
       const providers = await this.availableModelProviders(binding.environmentId);
       if (!providers.length) {
-        await ctx.reply("T3 当前没有已启用且可用的模型 Provider。");
+        await ctx.reply(
+          this.text(
+            ctx,
+            "T3 当前没有已启用且可用的模型 Provider。",
+            "T3 has no enabled, ready model provider.",
+          ),
+        );
         return;
       }
       const keyboard = new InlineKeyboard();
       providers.forEach((provider, index) => {
         const selected = thread.modelSelection?.instanceId === provider.instanceId ? "✅ " : "";
-        const newThread = provider.requiresNewThreadForModelChange ? " · 仅新线程" : "";
+        const newThread = provider.requiresNewThreadForModelChange
+          ? this.text(ctx, " · 仅新线程", " · New threads only")
+          : "";
         keyboard
           .text(
-            `${selected}${provider.displayName} · ${provider.models.length} 个模型${newThread}`.slice(
-              0,
-              60,
-            ),
+            this.text(
+              ctx,
+              `${selected}${provider.displayName} · ${provider.models.length} 个模型${newThread}`,
+              `${selected}${provider.displayName} · ${provider.models.length} models${newThread}`,
+            ).slice(0, 60),
             `tmp:${binding.id}:${index}`,
           )
           .row();
       });
-      keyboard.text("↩️ 线程设置", `ts:${binding.id}`);
-      const text = [
-        `🤖 ${binding.displayName ?? thread.title}`,
-        `当前：${thread.modelSelection ? `${thread.modelSelection.instanceId} / ${thread.modelSelection.model}` : "未记录"}`,
-        "",
-        "选择 Provider：",
-        "标注“仅新线程”的 Provider 无法在已有会话中更换模型。",
-      ].join("\n");
+      keyboard.text(this.text(ctx, "↩️ 线程设置", "↩️ Thread settings"), `ts:${binding.id}`);
+      const selectedModel = thread.modelSelection
+        ? `${thread.modelSelection.instanceId} / ${thread.modelSelection.model}`
+        : this.text(ctx, "未记录", "Not recorded");
+      const text = this.text(
+        ctx,
+        `🤖 ${binding.displayName ?? thread.title}\n当前：${selectedModel}\n\n选择 Provider：\n标注“仅新线程”的 Provider 无法在已有会话中更换模型。`,
+        `🤖 ${binding.displayName ?? thread.title}\nCurrent: ${selectedModel}\n\nChoose a provider:\nProviders marked “New threads only” cannot change models in an existing session.`,
+      );
       if (edit) await ctx.editMessageText(text, { reply_markup: keyboard });
       else await ctx.reply(text, { reply_markup: keyboard });
     } catch (error) {
       this.logError(ctx, error, "thread_model_providers");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -1709,7 +2176,7 @@ export class TelegramFrontend {
           thread.modelSelection.model === model.slug;
         keyboard
           .text(
-            `${selected ? "✅ " : model.isDefault ? "⭐ " : ""}${model.name}${model.isLegacy ? " · 旧版" : ""}`.slice(
+            `${selected ? "✅ " : model.isDefault ? "⭐ " : ""}${model.name}${model.isLegacy ? this.text(ctx, " · 旧版", " · Legacy") : ""}`.slice(
               0,
               60,
             ),
@@ -1719,12 +2186,12 @@ export class TelegramFrontend {
       });
       if (safeOffset > 0)
         keyboard.text(
-          "⬅️ 上一页",
+          this.text(ctx, "⬅️ 上一页", "⬅️ Previous"),
           `tml:${binding.id}:${providerIndex}:${Math.max(0, safeOffset - MODEL_PAGE_SIZE)}`,
         );
       if (safeOffset + MODEL_PAGE_SIZE < provider.models.length)
         keyboard.text(
-          "下一页 ➡️",
+          this.text(ctx, "下一页 ➡️", "Next ➡️"),
           `tml:${binding.id}:${providerIndex}:${safeOffset + MODEL_PAGE_SIZE}`,
         );
       keyboard.row().text("↩️ Provider", `tm:${binding.id}`);
@@ -1732,14 +2199,22 @@ export class TelegramFrontend {
         `🤖 ${provider.displayName}`,
         `${safeOffset + 1}–${Math.min(safeOffset + MODEL_PAGE_SIZE, provider.models.length)} / ${provider.models.length}`,
         provider.requiresNewThreadForModelChange
-          ? "⚠️ 此 Provider 的模型只能在线程首次对话前切换。"
-          : "选择后从下一条指令开始生效。",
+          ? this.text(
+              ctx,
+              "⚠️ 此 Provider 的模型只能在线程首次对话前切换。",
+              "⚠️ Models from this provider can only be changed before the thread's first turn.",
+            )
+          : this.text(
+              ctx,
+              "选择后从下一条指令开始生效。",
+              "The selection takes effect with the next instruction.",
+            ),
       ].join("\n");
       if (edit) await ctx.editMessageText(text, { reply_markup: keyboard });
       else await ctx.reply(text, { reply_markup: keyboard });
     } catch (error) {
       this.logError(ctx, error, "thread_provider_models");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -1765,20 +2240,25 @@ export class TelegramFrontend {
         threadId: binding.t3ThreadId,
         modelSelection: { instanceId: provider.instanceId, model: model.slug },
       });
-      await ctx.answerCallbackQuery({ text: "线程模型已保存" });
+      await ctx.answerCallbackQuery({
+        text: this.text(ctx, "线程模型已保存", "Thread model saved"),
+      });
       await ctx.editMessageText(
-        [
-          "✅ 已修改线程模型",
-          `Provider：${provider.displayName}`,
-          `模型：${model.name} (${model.slug})`,
-          "",
-          "下一条指令会使用该模型；T3 会在需要时自动重启底层会话。",
-        ].join("\n"),
-        { reply_markup: new InlineKeyboard().text("↩️ 线程设置", `ts:${binding.id}`) },
+        this.text(
+          ctx,
+          `✅ 已修改线程模型\nProvider：${provider.displayName}\n模型：${model.name} (${model.slug})\n\n下一条指令会使用该模型；T3 会在需要时自动重启底层会话。`,
+          `✅ Thread model changed\nProvider: ${provider.displayName}\nModel: ${model.name} (${model.slug})\n\nThe next instruction uses this model. T3 restarts the provider session when needed.`,
+        ),
+        {
+          reply_markup: new InlineKeyboard().text(
+            this.text(ctx, "↩️ 线程设置", "↩️ Thread settings"),
+            `ts:${binding.id}`,
+          ),
+        },
       );
     } catch (error) {
       this.logError(ctx, error, "set_thread_model");
-      await ctx.answerCallbackQuery({ text: safeErrorMessage(error), show_alert: true });
+      await ctx.answerCallbackQuery({ text: this.errorText(ctx, error), show_alert: true });
     }
   }
 
@@ -1789,42 +2269,47 @@ export class TelegramFrontend {
   ): Promise<void> {
     try {
       const thread = await this.findBoundThread(binding);
+      const locale = this.locale(ctx);
       const keyboard = new InlineKeyboard();
       RUNTIME_MODES.forEach((mode, index) => {
         const selected = thread.runtimeMode === mode.value ? "✅ " : "";
-        keyboard.text(`${selected}${mode.label}`, `trs:${binding.id}:${index}`).row();
+        keyboard.text(`${selected}${mode.label[locale]}`, `trs:${binding.id}:${index}`).row();
       });
-      keyboard.text("↩️ 线程设置", `ts:${binding.id}`);
-      const descriptions = RUNTIME_MODES.map((mode) => `${mode.label}：${mode.detail}`);
+      keyboard.text(tr(locale, "↩️ 线程设置", "↩️ Thread settings"), `ts:${binding.id}`);
+      const descriptions = RUNTIME_MODES.map(
+        (mode) => `${mode.label[locale]}${locale === "zh" ? "：" : ": "}${mode.detail[locale]}`,
+      );
       const text = [
-        "🔐 选择线程权限模式",
+        tr(locale, "🔐 选择线程权限模式", "🔐 Choose thread permission mode"),
         "",
         ...descriptions,
         "",
-        "权限变更从下一条指令生效。",
+        tr(
+          locale,
+          "权限变更从下一条指令生效。",
+          "Permission changes take effect with the next instruction.",
+        ),
       ].join("\n");
       if (edit) await ctx.editMessageText(text, { reply_markup: keyboard });
       else await ctx.reply(text, { reply_markup: keyboard });
     } catch (error) {
       this.logError(ctx, error, "thread_runtime_modes");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
   private async confirmFullAccess(ctx: Context, binding: BindingRecord): Promise<void> {
     await ctx.editMessageText(
-      [
-        "⚠️ 确认启用完全访问？",
-        "",
-        "T3 将不再询问审批，并可在 T3 主机上绕过文件系统沙箱执行命令。错误指令可能修改工作区外的文件或系统状态。",
-        "",
-        "仅在你信任该线程中的所有后续指令时启用。",
-      ].join("\n"),
+      this.text(
+        ctx,
+        "⚠️ 确认启用完全访问？\n\nT3 将不再询问审批，并可在 T3 主机上绕过文件系统沙箱执行命令。错误指令可能修改工作区外的文件或系统状态。\n\n仅在你信任该线程中的所有后续指令时启用。",
+        "⚠️ Enable full access?\n\nT3 will stop asking for approvals and can run commands on the T3 host without the filesystem sandbox. Incorrect instructions may modify files or system state outside the workspace.\n\nEnable this only if you trust every future instruction in this thread.",
+      ),
       {
         reply_markup: new InlineKeyboard()
-          .text("确认完全访问", `trf:${binding.id}`)
+          .text(this.text(ctx, "确认完全访问", "Enable full access"), `trf:${binding.id}`)
           .row()
-          .text("取消", `tr:${binding.id}`),
+          .text(this.text(ctx, "取消", "Cancel"), `tr:${binding.id}`),
       },
     );
   }
@@ -1837,7 +2322,11 @@ export class TelegramFrontend {
     const mode = RUNTIME_MODES[modeIndex];
     if (!mode) {
       await ctx.answerCallbackQuery({
-        text: "权限选项已失效，请重新打开线程设置。",
+        text: this.text(
+          ctx,
+          "权限选项已失效，请重新打开线程设置。",
+          "The permission option expired. Open Thread settings again.",
+        ),
         show_alert: true,
       });
       return;
@@ -1848,20 +2337,32 @@ export class TelegramFrontend {
         threadId: binding.t3ThreadId,
         runtimeMode: mode.value,
       });
-      await ctx.answerCallbackQuery({ text: `已设置：${mode.label}` });
+      const locale = this.locale(ctx);
+      await ctx.answerCallbackQuery({
+        text: tr(locale, `已设置：${mode.label.zh}`, `Set: ${mode.label.en}`),
+      });
       await ctx.editMessageText(
         [
-          "✅ 已修改线程权限",
-          `当前模式：${mode.label}`,
-          mode.detail,
+          tr(locale, "✅ 已修改线程权限", "✅ Thread permissions changed"),
+          tr(locale, `当前模式：${mode.label.zh}`, `Current mode: ${mode.label.en}`),
+          mode.detail[locale],
           "",
-          "下一条指令开始生效；当前 turn 不会被打断。",
+          tr(
+            locale,
+            "下一条指令开始生效；当前 turn 不会被打断。",
+            "This takes effect with the next instruction; the current turn is not interrupted.",
+          ),
         ].join("\n"),
-        { reply_markup: new InlineKeyboard().text("↩️ 线程设置", `ts:${binding.id}`) },
+        {
+          reply_markup: new InlineKeyboard().text(
+            tr(locale, "↩️ 线程设置", "↩️ Thread settings"),
+            `ts:${binding.id}`,
+          ),
+        },
       );
     } catch (error) {
       this.logError(ctx, error, "set_thread_runtime_mode");
-      await ctx.answerCallbackQuery({ text: safeErrorMessage(error), show_alert: true });
+      await ctx.answerCallbackQuery({ text: this.errorText(ctx, error), show_alert: true });
     }
   }
 
@@ -1877,7 +2378,11 @@ export class TelegramFrontend {
       (!this.topicsEnabled || binding.telegramThreadId === messageThreadId(ctx));
     if (!valid) {
       await ctx.answerCallbackQuery({
-        text: "线程设置已失效，或当前 Topic 与绑定不匹配。",
+        text: this.text(
+          ctx,
+          "线程设置已失效，或当前 Topic 与绑定不匹配。",
+          "Thread settings expired or this topic does not match the binding.",
+        ),
         show_alert: true,
       });
       return undefined;
@@ -1921,7 +2426,13 @@ export class TelegramFrontend {
     this.clearPendingMenuAction(ctx);
     const binding = suppliedBinding ?? this.binding(ctx);
     if (!binding) {
-      await ctx.reply("请进入已经绑定的线程 Topic，再点击“📜 历史记录”或发送 /history。");
+      await ctx.reply(
+        this.text(
+          ctx,
+          "请进入已经绑定的线程 Topic，再点击“📜 历史记录”或发送 /history。",
+          "Open an attached thread topic, then tap History or send /history.",
+        ),
+      );
       return;
     }
     try {
@@ -1930,7 +2441,11 @@ export class TelegramFrontend {
         threadId: binding.t3ThreadId,
       });
       if (!history.length) {
-        const empty = `📜 ${binding.displayName ?? shortId(binding.t3ThreadId)}\n\n暂无历史消息。`;
+        const empty = this.text(
+          ctx,
+          `📜 ${binding.displayName ?? shortId(binding.t3ThreadId)}\n\n暂无历史消息。`,
+          `📜 ${binding.displayName ?? shortId(binding.t3ThreadId)}\n\nNo history yet.`,
+        );
         if (edit) await ctx.editMessageText(empty);
         else await ctx.reply(empty);
         return;
@@ -1941,7 +2456,7 @@ export class TelegramFrontend {
       const start = Math.max(0, end - HISTORY_PAGE_SIZE);
       const page = history.slice(start, end);
       const blocks = page.map((message) => {
-        const role = message.role === "user" ? "👤 你" : "🤖 T3";
+        const role = message.role === "user" ? this.text(ctx, "👤 你", "👤 You") : "🤖 T3";
         const time = message.createdAt
           ? ` · ${message.createdAt.replace("T", " ").slice(0, 16)}`
           : "";
@@ -1953,20 +2468,31 @@ export class TelegramFrontend {
       const totalPages = Math.ceil(history.length / HISTORY_PAGE_SIZE);
       const text = [
         `📜 ${binding.displayName ?? shortId(binding.t3ThreadId)}`,
-        `第 ${newestPage}/${totalPages} 页 · 显示 ${start + 1}–${end} / ${history.length} 条`,
+        this.text(
+          ctx,
+          `第 ${newestPage}/${totalPages} 页 · 显示 ${start + 1}–${end} / ${history.length} 条`,
+          `Page ${newestPage}/${totalPages} · Showing ${start + 1}–${end} / ${history.length}`,
+        ),
         "",
         ...blocks.flatMap((block, index) => (index === 0 ? [block] : ["────────", block])),
       ].join("\n");
       const keyboard = new InlineKeyboard();
-      if (start > 0) keyboard.text("⬅️ 更早", `hi:${binding.id}:${safeOffset + HISTORY_PAGE_SIZE}`);
+      if (start > 0)
+        keyboard.text(
+          this.text(ctx, "⬅️ 更早", "⬅️ Older"),
+          `hi:${binding.id}:${safeOffset + HISTORY_PAGE_SIZE}`,
+        );
       if (safeOffset > 0)
-        keyboard.text("更晚 ➡️", `hi:${binding.id}:${Math.max(0, safeOffset - HISTORY_PAGE_SIZE)}`);
+        keyboard.text(
+          this.text(ctx, "更晚 ➡️", "Newer ➡️"),
+          `hi:${binding.id}:${Math.max(0, safeOffset - HISTORY_PAGE_SIZE)}`,
+        );
 
       if (edit) await ctx.editMessageText(text, { reply_markup: keyboard });
       else await ctx.reply(text, { reply_markup: keyboard });
     } catch (error) {
       this.logError(ctx, error, "history");
-      const message = safeErrorMessage(error);
+      const message = this.errorText(ctx, error);
       if (edit)
         await ctx.answerCallbackQuery({ text: message, show_alert: true }).catch(() => undefined);
       else await ctx.reply(message);
@@ -1989,22 +2515,34 @@ export class TelegramFrontend {
         "refusing to route Telegram message without a topic id",
       );
       return void (await ctx.reply(
-        "⚠️ Telegram 服务端没有为这条消息提供 Topic ID。为避免串线，消息没有发送给 T3。\n\n这也可能发生在客户端仍停留于已经失效或被重建的旧 Topic 页面。请返回 Topic 列表，重新进入目标 Topic 后再发送。",
+        this.text(
+          ctx,
+          "⚠️ Telegram 服务端没有为这条消息提供 Topic ID。为避免串线，消息没有发送给 T3。\n\n这也可能发生在客户端仍停留于已经失效或被重建的旧 Topic 页面。请返回 Topic 列表，重新进入目标 Topic 后再发送。",
+          "⚠️ Telegram did not provide a Topic ID for this message, so it was not sent to T3 to prevent cross-thread delivery.\n\nYou may still be viewing an old topic that was removed or rebuilt. Return to the topic list, reopen the target topic, and send again.",
+        ),
       ));
     }
     const binding = this.binding(ctx);
     if (!binding) {
       return void (await ctx.reply(
         currentTopic
-          ? "当前 Topic 没有绑定 T3 线程。请点击“🔗 绑定线程”；为避免串线，消息没有发送到默认线程。"
-          : "当前没有绑定。使用 /new 或 /attach 选择 T3 线程。",
+          ? this.text(
+              ctx,
+              "当前 Topic 没有绑定 T3 线程。请点击“🔗 绑定线程”；为避免串线，消息没有发送到默认线程。",
+              "This topic has no T3 thread binding. Tap Attach thread. The message was not sent to a default thread.",
+            )
+          : this.text(
+              ctx,
+              "当前没有绑定。使用 /new 或 /attach 选择 T3 线程。",
+              "Nothing is attached. Use /new or /attach to choose a T3 thread.",
+            ),
       ));
     }
     try {
       await this.requireCapability(binding.environmentId, "turnStart", "执行 turn");
     } catch (error) {
       this.logError(ctx, error, "turn_capability");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
       return;
     }
     const deduplicationKey = `telegram:${ctx.update.update_id}:${ctx.message!.message_id}`;
@@ -2027,13 +2565,17 @@ export class TelegramFrontend {
       );
       await ctx.api.sendMessage(
         chatTarget(binding.telegramChatId),
-        `已交给 T3${binding.telegramThreadId ? "" : ` · ${binding.displayName ?? shortId(binding.t3ThreadId)}`}`,
+        this.text(
+          ctx,
+          `已交给 T3${binding.telegramThreadId ? "" : ` · ${binding.displayName ?? shortId(binding.t3ThreadId)}`}`,
+          `Sent to T3${binding.telegramThreadId ? "" : ` · ${binding.displayName ?? shortId(binding.t3ThreadId)}`}`,
+        ),
         binding.telegramThreadId ? { message_thread_id: Number(binding.telegramThreadId) } : {},
       );
       this.subscriptionManager.sync();
     } catch (error) {
       this.logError(ctx, error, "turn_start");
-      await ctx.reply(safeErrorMessage(error));
+      await ctx.reply(this.errorText(ctx, error));
     }
   }
 
@@ -2067,6 +2609,45 @@ export class TelegramFrontend {
     return this.options.repository.ensureUser(String(sourceId));
   }
 
+  private locale(ctx: Context): BotLocale {
+    const userId = this.userId(ctx);
+    const stored = this.options.repository.getUserLocale(userId);
+    if (stored) return stored;
+    const locale = detectLocale(ctx.from?.language_code);
+    this.options.repository.setUserLocale(userId, locale);
+    return locale;
+  }
+
+  private localeForTelegramUser(telegramUserId: string): BotLocale {
+    const userId = this.options.repository.findUserId(telegramUserId);
+    return userId ? (this.options.repository.getUserLocale(userId) ?? "zh") : "zh";
+  }
+
+  private text(ctx: Context, zh: string, en: string): string {
+    return tr(this.locale(ctx), zh, en);
+  }
+
+  private menu(ctx: Context, key: MenuKey): string {
+    return MENUS[this.locale(ctx)][key];
+  }
+
+  private errorText(ctx: Context, error: unknown): string {
+    if (this.locale(ctx) === "zh") return safeErrorMessage(error);
+    if (error instanceof CapabilityUnsupportedError)
+      return "This T3 environment does not support that capability.";
+    if (error instanceof GatewayError) {
+      const known: Record<string, string> = {
+        project_not_found: "Project not found.",
+        thread_not_found: "The attached T3 thread no longer exists or is archived.",
+        provider_list_changed: "The provider list changed. Please open the selection again.",
+        model_list_changed: "The model list changed. Please open the selection again.",
+        t3_unavailable: "The T3 environment is unavailable. Check /status.",
+      };
+      return known[error.code] ?? error.message;
+    }
+    return "The operation failed. Check the connection with /status.";
+  }
+
   private async findProjectEnvironment(
     ctx: Context,
     projectId: string,
@@ -2094,7 +2675,11 @@ export class TelegramFrontend {
     }
     if (!this.topicsEnabled) {
       await ctx.reply(
-        "ℹ️ 当前机器人未启用私聊 Topics，将使用带线程名前缀的普通私聊后台监听。可在 @BotFather → Bot Settings → Topics 中开启。",
+        this.text(
+          ctx,
+          "ℹ️ 当前机器人未启用私聊 Topics，将使用带线程名前缀的普通私聊后台监听。可在 @BotFather → Bot Settings → Topics 中开启。",
+          "ℹ️ Private-chat Topics are disabled for this bot. Background replies will use thread-name prefixes. Enable Topics in @BotFather → Bot Settings → Topics.",
+        ),
       );
       return undefined;
     }
@@ -2107,7 +2692,11 @@ export class TelegramFrontend {
         "failed to create Telegram topic; using flat-chat binding",
       );
       await ctx.reply(
-        "⚠️ Telegram Topic 创建失败，已改用普通私聊绑定；后台回复会带线程名前缀。请检查 BotFather 的 Topics 设置。",
+        this.text(
+          ctx,
+          "⚠️ Telegram Topic 创建失败，已改用普通私聊绑定；后台回复会带线程名前缀。请检查 BotFather 的 Topics 设置。",
+          "⚠️ Telegram could not create a topic, so a regular private-chat binding is being used. Background replies include a thread prefix. Check the Topics setting in BotFather.",
+        ),
       );
       return undefined;
     }
@@ -2173,7 +2762,11 @@ export class TelegramFrontend {
           );
         await this.bot.api.sendMessage(
           chatTarget(migrated.telegramChatId),
-          `✅ 已将现有绑定迁移到独立 Topic：${migrated.displayName ?? shortId(migrated.t3ThreadId)}\n后续输入和后台回复都会留在这里。`,
+          tr(
+            this.options.repository.getUserLocale(migrated.userId) ?? "zh",
+            `✅ 已将现有绑定迁移到独立 Topic：${migrated.displayName ?? shortId(migrated.t3ThreadId)}\n后续输入和后台回复都会留在这里。`,
+            `✅ Existing binding moved to its own topic: ${migrated.displayName ?? shortId(migrated.t3ThreadId)}\nFuture input and background replies stay here.`,
+          ),
           { message_thread_id: topic.message_thread_id },
         );
       } catch (error) {
@@ -2224,7 +2817,11 @@ export class TelegramFrontend {
             );
             await this.bot.api.sendMessage(
               chatTarget(repaired.telegramChatId),
-              `✅ 已恢复绑定：${repaired.displayName ?? shortId(repaired.t3ThreadId)}\n原 Topic 已不存在，后台监听和 T3 会话保持不变。`,
+              tr(
+                this.options.repository.getUserLocale(repaired.userId) ?? "zh",
+                `✅ 已恢复绑定：${repaired.displayName ?? shortId(repaired.t3ThreadId)}\n原 Topic 已不存在，后台监听和 T3 会话保持不变。`,
+                `✅ Binding restored: ${repaired.displayName ?? shortId(repaired.t3ThreadId)}\nThe old topic no longer exists; the background listener and T3 session were preserved.`,
+              ),
               { message_thread_id: topic.message_thread_id },
             );
             continue;
