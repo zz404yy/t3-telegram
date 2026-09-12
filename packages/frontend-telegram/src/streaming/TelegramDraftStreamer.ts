@@ -1,56 +1,72 @@
 import type { Api } from "grammy";
 import { chunkTelegramText } from "../renderers/text.js";
 
-interface DraftApi {
-  sendMessageDraft(args: {
-    chat_id: number | string;
-    draft_id: number;
-    text: string;
-    message_thread_id?: number;
-    can_stop?: boolean;
-    keep_on_stop?: boolean;
-  }): Promise<unknown>;
-}
-
+/**
+ * Streams into persistent Telegram messages.
+ *
+ * Telegram drafts are deliberately not used here: sendMessageDraft previews expire after roughly
+ * 30 seconds and disappear as soon as the final sendMessage is made. Keeping real message IDs and
+ * editing them in place prevents the visible disappear-and-retype transition.
+ */
 export class TelegramDraftStreamer {
-  private readonly draftId = Math.floor(Math.random() * 2_000_000_000) + 1;
   private lastSentAt = 0;
   private lastText = "";
-  private draftSupported = true;
+  private streamingSupported = true;
+  private readonly messageIds: number[] = [];
+  private readonly lastChunks: string[] = [];
 
   constructor(
     private readonly api: Api,
     private readonly chatId: number | string,
     private readonly threadId?: number,
-    private readonly cadenceMs = 500,
+    private readonly cadenceMs = 750,
   ) {}
 
   async update(text: string, force = false): Promise<void> {
-    if (!this.draftSupported || !text || text === this.lastText) return;
+    if (!this.streamingSupported || !text || text === this.lastText) return;
     if (!force && Date.now() - this.lastSentAt < this.cadenceMs) return;
-    const visible = text.slice(-3900);
     try {
-      await (this.api.raw as unknown as DraftApi).sendMessageDraft({
-        chat_id: this.chatId,
-        draft_id: this.draftId,
-        text: visible,
-        can_stop: true,
-        keep_on_stop: true,
-        ...(this.threadId === undefined ? {} : { message_thread_id: this.threadId }),
-      });
+      await this.writePersistent(text);
       this.lastText = text;
       this.lastSentAt = Date.now();
     } catch {
-      this.draftSupported = false;
+      // A final, complete message is still attempted by finalize().
+      this.streamingSupported = false;
     }
   }
 
   async finalize(text: string): Promise<void> {
-    const chunks = chunkTelegramText(text || "任务已结束，但没有文本输出。");
-    for (const chunk of chunks) {
-      await this.api.sendMessage(this.chatId, chunk, {
-        ...(this.threadId === undefined ? {} : { message_thread_id: this.threadId }),
-      });
+    const complete = text || "任务已结束，但没有文本输出。";
+    try {
+      await this.writePersistent(complete);
+      this.lastText = complete;
+      return;
+    } catch {
+      // If Telegram rejected an edit, preserve correctness by sending the complete response once.
+      // The existing partial message remains visible instead of being deleted underneath the user.
     }
+
+    for (const chunk of chunkTelegramText(complete)) {
+      await this.api.sendMessage(this.chatId, chunk, this.threadOptions());
+    }
+  }
+
+  private async writePersistent(text: string): Promise<void> {
+    const chunks = chunkTelegramText(text);
+    for (const [index, chunk] of chunks.entries()) {
+      if (this.lastChunks[index] === chunk) continue;
+      const messageId = this.messageIds[index];
+      if (messageId === undefined) {
+        const sent = await this.api.sendMessage(this.chatId, chunk, this.threadOptions());
+        this.messageIds[index] = sent.message_id;
+      } else {
+        await this.api.editMessageText(this.chatId, messageId, chunk);
+      }
+      this.lastChunks[index] = chunk;
+    }
+  }
+
+  private threadOptions(): { message_thread_id?: number } {
+    return this.threadId === undefined ? {} : { message_thread_id: this.threadId };
   }
 }

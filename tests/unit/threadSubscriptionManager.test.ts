@@ -34,20 +34,19 @@ function setup() {
 
 function fakeApi() {
   const messages: Array<{ chatId: number | string; text: string; options: unknown }> = [];
-  const drafts: unknown[] = [];
+  const edits: Array<{ chatId: number | string; messageId: number; text: string }> = [];
   const api = {
-    raw: {
-      sendMessageDraft: async (input: unknown) => {
-        drafts.push(input);
-        return true;
-      },
-    },
     sendMessage: async (chatId: number | string, text: string, options: unknown) => {
       messages.push({ chatId, text, options });
       return { message_id: messages.length };
     },
+    editMessageText: async (chatId: number | string, messageId: number, text: string) => {
+      edits.push({ chatId, messageId, text });
+      messages[messageId - 1]!.text = text;
+      return true;
+    },
   } as unknown as Api;
-  return { api, messages, drafts };
+  return { api, messages, edits };
 }
 
 function backendWithEvents(events: Record<string, ThreadEvent[]>): CodingBackend {
