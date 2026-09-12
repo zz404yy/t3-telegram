@@ -1,0 +1,20 @@
+{
+  "request": {
+    "_tag": "Request",
+    "id": 2,
+    "tag": "orchestration.subscribeThread",
+    "payload": {
+      "threadId": "thread-sanitized",
+      "afterSequence": 41,
+      "requestCompletionMarker": true
+    },
+    "headers": []
+  },
+  "chunk": {
+    "_tag": "Chunk",
+    "requestId": 2,
+    "values": [{ "kind": "synchronized" }]
+  },
+  "ack": { "_tag": "Ack", "requestId": 2 },
+  "exit": { "_tag": "Exit", "requestId": 2, "exit": { "_tag": "Success", "value": null } }
+}

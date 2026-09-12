@@ -1,0 +1,56 @@
+name: T3 compatibility
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  upstream:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [stable, main]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11.9.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Resolve upstream ref
+        id: ref
+        env:
+          CHANNEL: ${{ matrix.channel }}
+        run: |
+          if [ "$CHANNEL" = stable ]; then
+            ref=$(curl -fsSL https://api.github.com/repos/pingdotgg/t3code/releases/latest | jq -r '.tag_name // "main"')
+          else
+            ref=main
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - run: git clone --depth 1 --branch "${{ steps.ref.outputs.ref }}" https://github.com/pingdotgg/t3code.git /tmp/t3code-upstream
+      - run: pnpm fingerprint:t3 /tmp/t3code-upstream | tee t3-compatibility-report.json
+      - name: Check required gateway surface
+        id: check
+        continue-on-error: ${{ matrix.channel == 'main' }}
+        run: pnpm check:t3 t3-compatibility-report.json | tee t3-compatibility-assessment.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: t3-${{ matrix.channel }}-compatibility
+          path: t3-compatibility-*.json
+      - name: Open nightly early-warning issue
+        if: matrix.channel == 'main' && steps.check.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          revision=$(git -C /tmp/t3code-upstream rev-parse HEAD)
+          title="T3 main compatibility warning: ${revision:0:12}"
+          if ! gh issue list --state open --search "$title in:title" --json title --jq '.[0].title' | grep -Fqx "$title"; then
+            gh issue create --title "$title" --body-file t3-compatibility-assessment.json --label compatibility || \
+              gh issue create --title "$title" --body-file t3-compatibility-assessment.json
+          fi

@@ -1,0 +1,45 @@
+{
+  "name": "t3-vibe-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch apps/gateway/src/main.ts",
+    "start": "tsx apps/gateway/src/main.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "inspect:t3": "tsx scripts/inspect-t3.ts",
+    "smoke:t3": "tsx scripts/smoke-t3.ts",
+    "fingerprint:t3": "tsx scripts/inspect-t3-upstream.ts",
+    "check:t3": "tsx scripts/check-t3-compatibility.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "dotenv": "^17.2.2",
+    "grammy": "^1.38.2",
+    "pino": "^9.9.4",
+    "ws": "^8.18.3",
+    "zod": "^4.1.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.3.1",
+    "@types/ws": "^8.18.1",
+    "eslint": "^9.35.0",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.42.0",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "request": {
+    "_tag": "Request",
+    "id": 1,
+    "tag": "orchestration.searchThreads",
+    "payload": { "query": "gateway probe", "limit": 1 },
+    "headers": []
+  },
+  "success": {
+    "_tag": "Exit",
+    "requestId": 1,
+    "exit": { "_tag": "Success", "value": { "matches": [] } }
+  }
+}

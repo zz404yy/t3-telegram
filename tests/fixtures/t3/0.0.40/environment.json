@@ -1,0 +1,13 @@
+{
+  "environmentId": "00000000-0000-4000-8000-000000000040",
+  "label": "sanitized-linux-host",
+  "platform": { "os": "linux", "arch": "x64", "machine": "cloud" },
+  "serverVersion": "0.0.40",
+  "capabilities": {
+    "repositoryIdentity": true,
+    "connectionProbe": true,
+    "attachmentUploads": true,
+    "threadSettlement": true,
+    "threadRestartContinuation": true
+  }
+}

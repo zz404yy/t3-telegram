@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "useUnknownInCatchVariables": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@t3-vibe/core": ["packages/core/src/index.ts"],
+      "@t3-vibe/adapter-t3": ["packages/adapter-t3/src/index.ts"],
+      "@t3-vibe/persistence": ["packages/persistence/src/index.ts"],
+      "@t3-vibe/frontend-telegram": ["packages/frontend-telegram/src/index.ts"],
+      "@t3-vibe/compatibility": ["packages/compatibility/src/index.ts"]
+    }
+  },
+  "include": ["apps/**/*.ts", "packages/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["dist", "node_modules"]
+}

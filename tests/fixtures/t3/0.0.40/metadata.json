@@ -1,0 +1,6 @@
+{
+  "t3Version": "0.0.40",
+  "upstreamRevision": "efccda9ac9230db22b36990cffabdad218fa41b0",
+  "captureDate": "2026-09-12",
+  "notes": "Descriptor and unauthenticated session were captured from localhost. RPC envelopes are sanitized from the matching upstream Effect RPC implementation and server contracts; authenticated live capture requires an explicit pairing credential."
+}
