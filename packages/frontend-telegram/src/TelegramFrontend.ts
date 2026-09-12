@@ -82,6 +82,70 @@ function chatTarget(id: string): number | string {
 
 const CONTROL_MENU_ACTIONS = CONTROL_MENU_KEYS.flatMap(menuLabels);
 
+export function buildMainMenu(locale: BotLocale, topicsEnabled: true): InlineKeyboard;
+export function buildMainMenu(locale: BotLocale, topicsEnabled: false): Keyboard;
+export function buildMainMenu(locale: BotLocale, topicsEnabled: boolean): Keyboard | InlineKeyboard;
+export function buildMainMenu(
+  locale: BotLocale,
+  topicsEnabled: boolean,
+): Keyboard | InlineKeyboard {
+  const menu = MENUS[locale];
+  if (topicsEnabled) {
+    return new InlineKeyboard()
+      .text(menu.newProject, "menu:newProject")
+      .text(menu.projectModel, "menu:projectModel")
+      .row()
+      .text(menu.newThread, "menu:newThread")
+      .text(menu.attach, "menu:attach")
+      .row()
+      .text(menu.backgroundThreads, "menu:backgroundThreads")
+      .row()
+      .text(menu.history, "menu:history")
+      .text(menu.threadSettings, "menu:threadSettings")
+      .row()
+      .text(menu.status, "menu:status")
+      .row()
+      .text(menu.stop, "menu:stop")
+      .text(menu.diff, "menu:diff")
+      .row()
+      .text(menu.environments, "menu:environments")
+      .text(menu.connect, "menu:connect")
+      .row()
+      .text(menu.detach, "menu:detach")
+      .text(menu.clearSessions, "menu:clearSessions")
+      .row()
+      .text(menu.help, "menu:help")
+      .text(menu.language, "menu:language");
+  }
+  return new Keyboard()
+    .text(menu.newProject)
+    .text(menu.projectModel)
+    .row()
+    .text(menu.newThread)
+    .text(menu.attach)
+    .row()
+    .text(menu.backgroundThreads)
+    .row()
+    .text(menu.history)
+    .text(menu.threadSettings)
+    .row()
+    .text(menu.status)
+    .row()
+    .text(menu.stop)
+    .text(menu.diff)
+    .row()
+    .text(menu.environments)
+    .text(menu.connect)
+    .row()
+    .text(menu.detach)
+    .text(menu.clearSessions)
+    .row()
+    .text(menu.help)
+    .text(menu.language)
+    .resized()
+    .persistent();
+}
+
 const HISTORY_PAGE_SIZE = 6;
 const MODEL_PAGE_SIZE = 8;
 
@@ -105,6 +169,7 @@ export class TelegramFrontend {
   private readonly subscriptionManager: ThreadSubscriptionManager;
   private readonly pendingMenuActions = new Map<string, PendingMenuAction>();
   private readonly pendingSessionClears = new Map<string, PendingSessionClear>();
+  private readonly removedLegacyKeyboards = new Set<string>();
 
   constructor(private readonly options: TelegramFrontendOptions) {
     this.bot = new Bot(options.token);
@@ -309,6 +374,20 @@ export class TelegramFrontend {
     this.bot.command("stop", async (ctx) => this.stopTurn(ctx));
     this.bot.command("diff", async (ctx) => this.showDiff(ctx));
 
+    this.bot.callbackQuery(/^menu:([A-Za-z]+)$/, async (ctx) => {
+      const key = ctx.match[1] as MenuKey;
+      if (!Object.prototype.hasOwnProperty.call(MENUS.zh, key)) {
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, "菜单操作已失效，请发送 /menu。", "This menu expired. Send /menu."),
+          show_alert: true,
+        });
+        return;
+      }
+      if (CONTROL_MENU_KEYS.includes(key)) await this.keepMenuCallbackInControlTopic(ctx);
+      await ctx.answerCallbackQuery();
+      await this.handleInlineMenu(ctx, key);
+    });
+
     this.bot.hears([...CONTROL_MENU_ACTIONS], async (ctx, next) => {
       if (await this.keepMenuActionInControlTopic(ctx)) await next();
     });
@@ -351,38 +430,13 @@ export class TelegramFrontend {
       await this.showDiff(ctx);
     });
     this.bot.hears(menuLabels("environments"), async (ctx) => this.showEnvironments(ctx));
-    this.bot.hears(menuLabels("connect"), async (ctx) => {
-      this.pendingMenuActions.set(this.pendingMenuKey(ctx), { type: "connect" });
-      await ctx.reply(
-        this.text(
-          ctx,
-          [
-            "请在 T3 主机运行 `npx t3 pair` 获取一次性 token。",
-            "然后发送一条消息：",
-            "http://T3主机:3773 PAIRING_TOKEN",
-            "",
-            "同机运行可使用：http://127.0.0.1:3773 PAIRING_TOKEN",
-          ].join("\n"),
-          [
-            "Run `npx t3 pair` on the T3 host to get a one-time token.",
-            "Then send one message:",
-            "http://T3-HOST:3773 PAIRING_TOKEN",
-            "",
-            "On the same host, use: http://127.0.0.1:3773 PAIRING_TOKEN",
-          ].join("\n"),
-        ),
-      );
-    });
+    this.bot.hears(menuLabels("connect"), async (ctx) => this.beginConnection(ctx));
     this.bot.hears(menuLabels("detach"), async (ctx) => this.detachBinding(ctx));
     this.bot.hears(menuLabels("help"), async (ctx) => this.showHelp(ctx));
     this.bot.hears(menuLabels("language"), async (ctx) => {
       this.clearPendingMenuAction(ctx);
       const locale: BotLocale = ctx.message?.text === MENUS.zh.language ? "en" : "zh";
-      this.options.repository.setUserLocale(this.userId(ctx), locale);
-      await this.sendControlPanel(
-        String(ctx.chat.id),
-        tr(locale, "✅ 已切换为中文。", "✅ Switched to English."),
-      );
+      await this.setLanguage(ctx, locale);
     });
 
     this.bot.callbackQuery(/^pc:(.+)$/, async (ctx) => {
@@ -796,35 +850,94 @@ export class TelegramFrontend {
     return names.map((command, index) => ({ command, description: descriptions[index]! }));
   }
 
-  private mainMenu(locale: BotLocale): Keyboard {
-    const menu = MENUS[locale];
-    return new Keyboard()
-      .text(menu.newProject)
-      .text(menu.projectModel)
-      .row()
-      .text(menu.newThread)
-      .text(menu.attach)
-      .row()
-      .text(menu.backgroundThreads)
-      .row()
-      .text(menu.history)
-      .text(menu.threadSettings)
-      .row()
-      .text(menu.status)
-      .row()
-      .text(menu.stop)
-      .text(menu.diff)
-      .row()
-      .text(menu.environments)
-      .text(menu.connect)
-      .row()
-      .text(menu.detach)
-      .text(menu.clearSessions)
-      .row()
-      .text(menu.help)
-      .text(menu.language)
-      .resized()
-      .persistent();
+  private async handleInlineMenu(ctx: Context, key: MenuKey): Promise<void> {
+    switch (key) {
+      case "newProject":
+        await this.beginProjectCreation(ctx);
+        return;
+      case "projectModel":
+        await this.showModelProjects(ctx);
+        return;
+      case "newThread":
+        await this.showProjects(ctx);
+        return;
+      case "attach":
+        await this.showThreads(ctx, "");
+        return;
+      case "backgroundThreads":
+        await this.showBackgroundThreads(ctx);
+        return;
+      case "history":
+        await this.showHistory(ctx, 0);
+        return;
+      case "threadSettings":
+        await this.showThreadSettings(ctx);
+        return;
+      case "clearSessions":
+        await this.beginClearSessions(ctx);
+        return;
+      case "status":
+        await this.showStatus(ctx);
+        return;
+      case "stop":
+        await this.stopTurn(ctx);
+        return;
+      case "diff":
+        await this.showDiff(ctx);
+        return;
+      case "environments":
+        await this.showEnvironments(ctx);
+        return;
+      case "connect":
+        await this.beginConnection(ctx);
+        return;
+      case "detach":
+        await this.detachBinding(ctx);
+        return;
+      case "help":
+        await this.showHelp(ctx);
+        return;
+      case "language": {
+        const locale = this.locale(ctx) === "zh" ? "en" : "zh";
+        await this.setLanguage(ctx, locale);
+      }
+    }
+  }
+
+  private async beginConnection(ctx: Context): Promise<void> {
+    this.pendingMenuActions.set(this.pendingMenuKey(ctx), { type: "connect" });
+    await ctx.reply(
+      this.text(
+        ctx,
+        [
+          "请在 T3 主机运行 `npx t3 pair` 获取一次性 token。",
+          "然后发送一条消息：",
+          "http://T3主机:3773 PAIRING_TOKEN",
+          "",
+          "同机运行可使用：http://127.0.0.1:3773 PAIRING_TOKEN",
+        ].join("\n"),
+        [
+          "Run `npx t3 pair` on the T3 host to get a one-time token.",
+          "Then send one message:",
+          "http://T3-HOST:3773 PAIRING_TOKEN",
+          "",
+          "On the same host, use: http://127.0.0.1:3773 PAIRING_TOKEN",
+        ].join("\n"),
+      ),
+    );
+  }
+
+  private async setLanguage(ctx: Context, locale: BotLocale): Promise<void> {
+    this.clearPendingMenuAction(ctx);
+    this.options.repository.setUserLocale(this.userId(ctx), locale);
+    await this.sendControlPanel(
+      String(ctx.chat!.id),
+      tr(locale, "✅ 已切换为中文。", "✅ Switched to English."),
+    );
+  }
+
+  private mainMenu(locale: BotLocale): Keyboard | InlineKeyboard {
+    return buildMainMenu(locale, this.topicsEnabled);
   }
 
   private async restoreMainMenus(): Promise<void> {
@@ -843,7 +956,7 @@ export class TelegramFrontend {
       } catch (error) {
         this.options.logger.warn(
           { err: error, telegram_chat_id: telegramId },
-          "could not restore Telegram reply keyboard",
+          "could not restore Telegram menu",
         );
       }
     }
@@ -876,7 +989,30 @@ export class TelegramFrontend {
   private async sendControlPanel(chatId: string, text: string, silent = false): Promise<void> {
     const locale = this.localeForTelegramUser(chatId);
     const threadId = await this.ensureControlTopic(chatId);
-    await this.bot.api.sendMessage(chatTarget(chatId), text, {
+    const target = chatTarget(chatId);
+    if (threadId && !this.removedLegacyKeyboards.has(chatId)) {
+      const removal = await this.bot.api.sendMessage(target, text, {
+        message_thread_id: Number(threadId),
+        ...(silent ? { disable_notification: true } : {}),
+        reply_markup: { remove_keyboard: true },
+      });
+      this.removedLegacyKeyboards.add(chatId);
+      await this.bot.api.sendMessage(target, text, {
+        message_thread_id: Number(threadId),
+        ...(silent ? { disable_notification: true } : {}),
+        reply_markup: buildMainMenu(locale, true),
+      });
+      await this.bot.api
+        .deleteMessage(target, removal.message_id)
+        .catch((error: unknown) =>
+          this.options.logger.debug(
+            { err: error, telegram_chat_id: chatId },
+            "could not delete legacy keyboard removal message",
+          ),
+        );
+      return;
+    }
+    await this.bot.api.sendMessage(target, text, {
       ...(threadId ? { message_thread_id: Number(threadId) } : {}),
       ...(silent ? { disable_notification: true } : {}),
       reply_markup: this.mainMenu(locale),
@@ -900,6 +1036,25 @@ export class TelegramFrontend {
       "routed exact Telegram control menu action to persistent control topic",
     );
     return true;
+  }
+
+  private async keepMenuCallbackInControlTopic(ctx: Context): Promise<void> {
+    if (!this.topicsEnabled) return;
+    const chatId = String(ctx.chat!.id);
+    const controlTopic = await this.ensureControlTopic(chatId);
+    const message = ctx.callbackQuery?.message;
+    if (!controlTopic || !message) return;
+    const sourceTopicId = messageThreadId(ctx);
+    routeControlMenuMessage(message as MutableTelegramTopicMessage, controlTopic);
+    this.options.logger.debug(
+      {
+        telegram_chat_id: chatId,
+        source_topic_id: sourceTopicId,
+        control_topic_id: controlTopic,
+        menu_action: ctx.callbackQuery.data,
+      },
+      "routed Telegram inline control action to persistent control topic",
+    );
   }
 
   private async beginProjectCreation(ctx: Context): Promise<void> {
@@ -1740,7 +1895,10 @@ export class TelegramFrontend {
           `✅ 已创建并绑定：${compactThreadName(thread)}\n现在直接发送编码指令即可。`,
           `✅ Created and attached: ${compactThreadName(thread)}\nSend a coding instruction here.`,
         ),
-        telegramThreadId ? { message_thread_id: Number(telegramThreadId) } : {},
+        {
+          ...(telegramThreadId ? { message_thread_id: Number(telegramThreadId) } : {}),
+          reply_markup: this.mainMenu(this.locale(ctx)),
+        },
       );
       await this.deleteNavigationMessage(ctx);
     } catch (error) {
@@ -1833,9 +1991,12 @@ export class TelegramFrontend {
             `✅ 该 T3 线程已经绑定，已复用原 Topic：${compactThreadName(found.thread)}`,
             `✅ This T3 thread was already attached; reusing its topic: ${compactThreadName(found.thread)}`,
           ),
-          destination.telegramThreadId
-            ? { message_thread_id: Number(destination.telegramThreadId) }
-            : {},
+          {
+            ...(destination.telegramThreadId
+              ? { message_thread_id: Number(destination.telegramThreadId) }
+              : {}),
+            reply_markup: this.mainMenu(this.locale(ctx)),
+          },
         );
         await this.deleteNavigationMessage(ctx);
         return;
@@ -1859,7 +2020,10 @@ export class TelegramFrontend {
           `✅ 已绑定同一个 T3 线程：${compactThreadName(found.thread)}`,
           `✅ Attached to the same T3 thread: ${compactThreadName(found.thread)}`,
         ),
-        telegramThreadId ? { message_thread_id: Number(telegramThreadId) } : {},
+        {
+          ...(telegramThreadId ? { message_thread_id: Number(telegramThreadId) } : {}),
+          reply_markup: this.mainMenu(this.locale(ctx)),
+        },
       );
       await this.deleteNavigationMessage(ctx);
     } catch (error) {
@@ -2570,7 +2734,12 @@ export class TelegramFrontend {
           `已交给 T3${binding.telegramThreadId ? "" : ` · ${binding.displayName ?? shortId(binding.t3ThreadId)}`}`,
           `Sent to T3${binding.telegramThreadId ? "" : ` · ${binding.displayName ?? shortId(binding.t3ThreadId)}`}`,
         ),
-        binding.telegramThreadId ? { message_thread_id: Number(binding.telegramThreadId) } : {},
+        {
+          ...(binding.telegramThreadId
+            ? { message_thread_id: Number(binding.telegramThreadId) }
+            : {}),
+          reply_markup: this.mainMenu(this.locale(ctx)),
+        },
       );
       this.subscriptionManager.sync();
     } catch (error) {
