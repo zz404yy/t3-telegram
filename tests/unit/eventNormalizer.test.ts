@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  normalizeThreadStreamItem,
-  threadStreamItemThreadId,
-} from "@t3-vibe/adapter-t3";
+import { normalizeThreadStreamItem, threadStreamItemThreadId } from "@t3-vibe/adapter-t3";
 
 function event(type: string, payload: unknown, sequence = 7) {
   return { kind: "event", event: { type, payload, sequence } };
@@ -82,6 +79,65 @@ describe("T3 event normalizer", () => {
         ],
       },
     });
+  });
+
+  it("normalizes structured AI questions without treating them as approvals", () => {
+    expect(
+      normalizeThreadStreamItem(
+        event("thread.activity-appended", {
+          activity: {
+            kind: "user-input.requested",
+            payload: {
+              requestId: "question-request-1",
+              questions: [
+                {
+                  id: "mode",
+                  header: "Execution",
+                  question: "Which mode should be used?",
+                  multiSelect: false,
+                  allowCustomAnswer: true,
+                  options: [
+                    { value: "safe", label: "Safe", description: "Use sandboxing" },
+                    { value: "fast", label: "Fast" },
+                  ],
+                },
+              ],
+            },
+          },
+        }),
+      ),
+    ).toEqual([
+      {
+        type: "user-input.requested",
+        request: {
+          requestId: "question-request-1",
+          questions: [
+            {
+              id: "mode",
+              header: "Execution",
+              question: "Which mode should be used?",
+              multiSelect: false,
+              allowCustomAnswer: true,
+              options: [
+                { value: "safe", label: "Safe", description: "Use sandboxing" },
+                { value: "fast", label: "Fast" },
+              ],
+            },
+          ],
+        },
+        sequence: 7,
+      },
+    ]);
+  });
+
+  it("exposes the checkpoint before a final answer as a rendering boundary", () => {
+    expect(
+      normalizeThreadStreamItem(
+        event("thread.activity-appended", {
+          activity: { kind: "checkpoint.captured", payload: { status: "ready" } },
+        }),
+      ),
+    ).toEqual([{ type: "response.finalizing", sequence: 7 }]);
   });
 
   it("reconciles the latest turn from a fallback snapshot", () => {

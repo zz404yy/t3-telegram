@@ -9,6 +9,7 @@ import type {
   EnvironmentConnector,
   GatewayRepository,
   ModelProviderSummary,
+  PendingUserInputRecord,
   ProjectSummary,
   ThreadSummary,
 } from "@t3-vibe/core";
@@ -20,6 +21,7 @@ import {
 } from "@t3-vibe/core";
 import { compactThreadName, renderCapabilities, renderDiffSummary } from "./renderers/text.js";
 import { ThreadSubscriptionManager } from "./ThreadSubscriptionManager.js";
+import { buildUserInputView, completedUserInputText } from "./userInput.js";
 import {
   CONTROL_MENU_KEYS,
   detectLocale,
@@ -56,15 +58,24 @@ interface MutableTelegramTopicMessage {
   direct_messages_topic?: { topic_id: number };
 }
 
-/** Reply-keyboard updates may lose their private Topic identity; control actions are exact labels. */
+/**
+ * Legacy reply-keyboard updates can lose their private Topic identity. Only repair an absent
+ * identity: overwriting a real Topic here makes binding-aware actions run against the console.
+ */
 export function routeControlMenuMessage(
   message: MutableTelegramTopicMessage,
   controlTopicId: string,
-): void {
+): boolean {
+  if (
+    message.message_thread_id !== undefined ||
+    message.direct_messages_topic?.topic_id !== undefined
+  )
+    return false;
   const topicId = Number(controlTopicId);
   message.message_thread_id = topicId;
   message.is_topic_message = true;
   if (message.direct_messages_topic) message.direct_messages_topic.topic_id = topicId;
+  return true;
 }
 
 function commandArgument(ctx: Context): string {
@@ -81,6 +92,10 @@ function chatTarget(id: string): number | string {
 }
 
 const CONTROL_MENU_ACTIONS = CONTROL_MENU_KEYS.flatMap(menuLabels);
+
+export function pendingMenuScopeKey(chatId: string | number, threadId?: string): string {
+  return `${chatId}:${threadId ?? "root"}`;
+}
 
 export function buildMainMenu(locale: BotLocale, topicsEnabled: true): InlineKeyboard;
 export function buildMainMenu(locale: BotLocale, topicsEnabled: false): Keyboard;
@@ -383,7 +398,6 @@ export class TelegramFrontend {
         });
         return;
       }
-      if (CONTROL_MENU_KEYS.includes(key)) await this.keepMenuCallbackInControlTopic(ctx);
       await ctx.answerCallbackQuery();
       await this.handleInlineMenu(ctx, key);
     });
@@ -518,6 +532,108 @@ export class TelegramFrontend {
         this.logError(ctx, error, "approval");
         await ctx.answerCallbackQuery({ text: this.errorText(ctx, error), show_alert: true });
       }
+    });
+
+    this.bot.callbackQuery(/^ui:([0-9a-f-]+):(\d+)$/, async (ctx) => {
+      const pending = await this.requirePendingUserInput(ctx, ctx.match[1]!);
+      if (!pending) return;
+      const binding = this.options.repository.findBinding(pending.bindingId)!;
+      const question = pending.request.questions[pending.questionIndex];
+      const option = question?.options[Number(ctx.match[2])];
+      if (!question || !option) {
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, "选项已失效。", "This option expired."),
+          show_alert: true,
+        });
+        return;
+      }
+      const answers = { ...pending.answers };
+      if (question.multiSelect) {
+        const values = new Set(Array.isArray(answers[question.id]) ? answers[question.id] : []);
+        if (values.has(option.value)) values.delete(option.value);
+        else values.add(option.value);
+        answers[question.id] = [...values];
+        const saved = this.options.repository.savePendingUserInput({
+          bindingId: binding.id,
+          t3RequestId: pending.t3RequestId,
+          request: pending.request,
+          answers,
+          questionIndex: pending.questionIndex,
+          awaitingCustomAnswer: false,
+        });
+        await ctx.answerCallbackQuery();
+        await this.editPendingUserInput(ctx, binding, saved);
+        return;
+      }
+      answers[question.id] = option.value;
+      const saved = this.options.repository.savePendingUserInput({
+        bindingId: binding.id,
+        t3RequestId: pending.t3RequestId,
+        request: pending.request,
+        answers,
+        questionIndex: pending.questionIndex + 1,
+        awaitingCustomAnswer: false,
+      });
+      await ctx.answerCallbackQuery({ text: this.text(ctx, "正在提交…", "Submitting…") });
+      if (saved.questionIndex >= saved.request.questions.length)
+        await this.submitUserInput(ctx, binding, saved);
+      else await this.editPendingUserInput(ctx, binding, saved);
+    });
+
+    this.bot.callbackQuery(/^uis:([0-9a-f-]+)$/, async (ctx) => {
+      const pending = await this.requirePendingUserInput(ctx, ctx.match[1]!);
+      if (!pending) return;
+      const binding = this.options.repository.findBinding(pending.bindingId)!;
+      const question = pending.request.questions[pending.questionIndex];
+      const answer = question ? pending.answers[question.id] : undefined;
+      if (!question || !Array.isArray(answer) || answer.length === 0) {
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, "请至少选择一项。", "Choose at least one option."),
+          show_alert: true,
+        });
+        return;
+      }
+      const saved = this.options.repository.savePendingUserInput({
+        bindingId: binding.id,
+        t3RequestId: pending.t3RequestId,
+        request: pending.request,
+        answers: pending.answers,
+        questionIndex: pending.questionIndex + 1,
+        awaitingCustomAnswer: false,
+      });
+      await ctx.answerCallbackQuery({ text: this.text(ctx, "已确认", "Confirmed") });
+      if (saved.questionIndex >= saved.request.questions.length)
+        await this.submitUserInput(ctx, binding, saved);
+      else await this.editPendingUserInput(ctx, binding, saved);
+    });
+
+    this.bot.callbackQuery(/^uic:([0-9a-f-]+)$/, async (ctx) => {
+      const pending = await this.requirePendingUserInput(ctx, ctx.match[1]!);
+      if (!pending) return;
+      const question = pending.request.questions[pending.questionIndex];
+      if (!question?.allowCustomAnswer) {
+        await ctx.answerCallbackQuery({
+          text: this.text(ctx, "不支持自定义回答。", "Custom answers are not allowed."),
+          show_alert: true,
+        });
+        return;
+      }
+      this.options.repository.savePendingUserInput({
+        bindingId: pending.bindingId,
+        t3RequestId: pending.t3RequestId,
+        request: pending.request,
+        answers: pending.answers,
+        questionIndex: pending.questionIndex,
+        awaitingCustomAnswer: true,
+      });
+      await ctx.answerCallbackQuery();
+      await ctx.reply(
+        this.text(
+          ctx,
+          `✍️ 请直接发送你的回答：\n${question.question}`,
+          `✍️ Send your answer:\n${question.question}`,
+        ),
+      );
     });
 
     this.bot.callbackQuery(/^sb:([0-9a-f-]+)$/, async (ctx) => {
@@ -773,6 +889,7 @@ export class TelegramFrontend {
     });
 
     this.bot.on("message:text", async (ctx) => {
+      if (await this.handleCustomUserInput(ctx)) return;
       const pending = this.pendingMenuActions.get(this.pendingMenuKey(ctx));
       if (pending) return this.handlePendingMenuInput(ctx, pending);
       await this.startBoundTurn(ctx);
@@ -1025,36 +1142,20 @@ export class TelegramFrontend {
     const controlTopic = await this.ensureControlTopic(chatId);
     if (!controlTopic || !ctx.message) return true;
     const sourceTopicId = messageThreadId(ctx);
-    routeControlMenuMessage(ctx.message, controlTopic);
+    const repaired = routeControlMenuMessage(ctx.message, controlTopic);
     this.options.logger.debug(
       {
         telegram_chat_id: chatId,
         source_topic_id: sourceTopicId,
         control_topic_id: controlTopic,
         menu_action: ctx.message.text,
+        repaired_missing_topic: repaired,
       },
-      "routed exact Telegram control menu action to persistent control topic",
+      repaired
+        ? "repaired missing topic on legacy Telegram control menu action"
+        : "preserved Telegram topic on menu action",
     );
     return true;
-  }
-
-  private async keepMenuCallbackInControlTopic(ctx: Context): Promise<void> {
-    if (!this.topicsEnabled) return;
-    const chatId = String(ctx.chat!.id);
-    const controlTopic = await this.ensureControlTopic(chatId);
-    const message = ctx.callbackQuery?.message;
-    if (!controlTopic || !message) return;
-    const sourceTopicId = messageThreadId(ctx);
-    routeControlMenuMessage(message as MutableTelegramTopicMessage, controlTopic);
-    this.options.logger.debug(
-      {
-        telegram_chat_id: chatId,
-        source_topic_id: sourceTopicId,
-        control_topic_id: controlTopic,
-        menu_action: ctx.callbackQuery.data,
-      },
-      "routed Telegram inline control action to persistent control topic",
-    );
   }
 
   private async beginProjectCreation(ctx: Context): Promise<void> {
@@ -1807,7 +1908,7 @@ export class TelegramFrontend {
 
   private pendingMenuKey(ctx: Context): string {
     const chatId = ctx.chat?.id ?? ctx.stoppedMessageGeneration?.chat.id ?? "unknown";
-    return `${chatId}:${messageThreadId(ctx) ?? "root"}`;
+    return pendingMenuScopeKey(chatId, messageThreadId(ctx));
   }
 
   private clearPendingMenuAction(ctx: Context): void {
@@ -2579,6 +2680,98 @@ export class TelegramFrontend {
         provider.status === "ready" &&
         provider.models.length > 0,
     );
+  }
+
+  private async requirePendingUserInput(
+    ctx: Context,
+    id: string,
+  ): Promise<PendingUserInputRecord | undefined> {
+    const pending = this.options.repository.findPendingUserInput(id);
+    const binding = pending && this.options.repository.findBinding(pending.bindingId);
+    const valid =
+      pending?.status === "pending" &&
+      binding &&
+      binding.userId === this.userId(ctx) &&
+      binding.telegramChatId === String(ctx.chat!.id) &&
+      (!this.topicsEnabled || binding.telegramThreadId === messageThreadId(ctx));
+    if (!valid) {
+      await ctx.answerCallbackQuery({
+        text: this.text(
+          ctx,
+          "该问题已处理、已失效，或不属于当前 Topic。",
+          "This question was handled, expired, or belongs to another topic.",
+        ),
+        show_alert: true,
+      });
+      return undefined;
+    }
+    return pending;
+  }
+
+  private async editPendingUserInput(
+    ctx: Context,
+    binding: BindingRecord,
+    pending: PendingUserInputRecord,
+  ): Promise<void> {
+    if (!pending.telegramMessageId) return;
+    const view = buildUserInputView(pending, this.locale(ctx));
+    await ctx.api.editMessageText(
+      chatTarget(binding.telegramChatId),
+      Number(pending.telegramMessageId),
+      view.text,
+      { reply_markup: view.keyboard },
+    );
+  }
+
+  private async submitUserInput(
+    ctx: Context,
+    binding: BindingRecord,
+    pending: PendingUserInputRecord,
+  ): Promise<void> {
+    if (!this.options.repository.claimPendingUserInput(pending.id)) return;
+    try {
+      await this.options.backend.respondToUserInput({
+        environmentId: binding.environmentId,
+        threadId: binding.t3ThreadId,
+        requestId: pending.t3RequestId,
+        answers: pending.answers,
+      });
+      this.options.repository.resolvePendingUserInput(pending.id);
+      if (pending.telegramMessageId)
+        await ctx.api.editMessageText(
+          chatTarget(binding.telegramChatId),
+          Number(pending.telegramMessageId),
+          completedUserInputText(pending, this.locale(ctx)),
+          { reply_markup: { inline_keyboard: [] } },
+        );
+      this.subscriptionManager.sync();
+    } catch (error) {
+      this.options.repository.releasePendingUserInput(pending.id);
+      this.logError(ctx, error, "user_input");
+      await ctx.reply(this.errorText(ctx, error));
+    }
+  }
+
+  private async handleCustomUserInput(ctx: Context): Promise<boolean> {
+    const binding = this.binding(ctx);
+    if (!binding) return false;
+    const pending = this.options.repository.findPendingUserInputForBinding(binding.id);
+    if (!pending?.awaitingCustomAnswer) return false;
+    const question = pending.request.questions[pending.questionIndex];
+    const answer = ctx.message?.text?.trim();
+    if (!question || !answer) return false;
+    const saved = this.options.repository.savePendingUserInput({
+      bindingId: binding.id,
+      t3RequestId: pending.t3RequestId,
+      request: pending.request,
+      answers: { ...pending.answers, [question.id]: answer },
+      questionIndex: pending.questionIndex + 1,
+      awaitingCustomAnswer: false,
+    });
+    if (saved.questionIndex >= saved.request.questions.length)
+      await this.submitUserInput(ctx, binding, saved);
+    else await this.editPendingUserInput(ctx, binding, saved);
+    return true;
   }
 
   private async showHistory(

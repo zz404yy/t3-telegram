@@ -1,4 +1,4 @@
-import type { ApprovalOption, ThreadEvent } from "@t3-vibe/core";
+import type { ApprovalOption, ThreadEvent, UserInputQuestion } from "@t3-vibe/core";
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object"
@@ -69,6 +69,41 @@ function approvalOptions(value: unknown): ApprovalOption[] {
   });
 }
 
+function userInputQuestions(value: unknown): UserInputQuestion[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const item = object(entry);
+    const id = string(item?.id);
+    const question = string(item?.question);
+    if (!id || !question) return [];
+    const options = Array.isArray(item?.options)
+      ? item.options.flatMap((entry) => {
+          const option = object(entry);
+          const value = string(option?.value);
+          const label = string(option?.label);
+          if (!value || !label) return [];
+          return [
+            {
+              value,
+              label,
+              ...(string(option?.description) ? { description: string(option?.description)! } : {}),
+            },
+          ];
+        })
+      : [];
+    return [
+      {
+        id,
+        question,
+        options,
+        multiSelect: item?.multiSelect === true,
+        allowCustomAnswer: item?.allowCustomAnswer === true,
+        ...(string(item?.header) ? { header: string(item?.header)! } : {}),
+      },
+    ];
+  });
+}
+
 function normalizeActivity(activity: Record<string, unknown>, sequence?: number): ThreadEvent {
   const kind = string(activity.kind) ?? "unknown";
   const payload = object(activity.payload) ?? {};
@@ -95,6 +130,26 @@ function normalizeActivity(activity: Record<string, unknown>, sequence?: number)
       },
       ...(sequence === undefined ? {} : { sequence }),
     };
+  }
+  if (kind === "user-input.requested") {
+    const requestId = string(payload.requestId);
+    const questions = userInputQuestions(payload.questions);
+    if (!requestId || questions.length === 0)
+      return { type: "unknown", rawType: kind, ...(sequence === undefined ? {} : { sequence }) };
+    return {
+      type: "user-input.requested",
+      request: { requestId, questions },
+      ...(sequence === undefined ? {} : { sequence }),
+    };
+  }
+  if (kind === "user-input.resolved") {
+    const requestId = string(payload.requestId);
+    return requestId
+      ? { type: "user-input.resolved", requestId, ...(sequence === undefined ? {} : { sequence }) }
+      : { type: "unknown", rawType: kind, ...(sequence === undefined ? {} : { sequence }) };
+  }
+  if (kind === "checkpoint.captured") {
+    return { type: "response.finalizing", ...(sequence === undefined ? {} : { sequence }) };
   }
   if (kind === "runtime.warning") {
     return {
@@ -163,6 +218,7 @@ function normalizeSnapshot(item: Record<string, unknown>): ThreadEvent[] {
   }
 
   const approvals = new Map<string, Record<string, unknown>>();
+  const userInputs = new Map<string, Record<string, unknown>>();
   for (const entry of Array.isArray(thread.activities) ? thread.activities : []) {
     const activity = object(entry);
     if (!activity || string(activity.turnId) !== turnId) continue;
@@ -171,8 +227,11 @@ function normalizeSnapshot(item: Record<string, unknown>): ThreadEvent[] {
     if (!requestId) continue;
     if (activity.kind === "approval.requested") approvals.set(requestId, activity);
     if (activity.kind === "approval.resolved") approvals.delete(requestId);
+    if (activity.kind === "user-input.requested") userInputs.set(requestId, activity);
+    if (activity.kind === "user-input.resolved") userInputs.delete(requestId);
   }
   for (const activity of approvals.values()) events.push(normalizeActivity(activity));
+  for (const activity of userInputs.values()) events.push(normalizeActivity(activity));
 
   const checkpoint = (Array.isArray(thread.checkpoints) ? thread.checkpoints : [])
     .map(object)

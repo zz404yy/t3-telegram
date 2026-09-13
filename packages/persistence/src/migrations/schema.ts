@@ -107,6 +107,21 @@ export const migrations = [
     FOREIGN KEY(binding_id) REFERENCES bindings(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS pending_user_inputs (
+    id TEXT PRIMARY KEY,
+    binding_id TEXT NOT NULL,
+    t3_request_id TEXT NOT NULL,
+    telegram_message_id TEXT,
+    status TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    answers_json TEXT NOT NULL DEFAULT '{}',
+    question_index INTEGER NOT NULL DEFAULT 0,
+    awaiting_custom_answer INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(binding_id, t3_request_id),
+    FOREIGN KEY(binding_id) REFERENCES bindings(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS compatibility_observations (
     id TEXT PRIMARY KEY,
     environment_id TEXT NOT NULL,

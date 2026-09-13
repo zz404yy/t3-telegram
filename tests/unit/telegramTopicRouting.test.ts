@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildMainMenu,
+  pendingMenuScopeKey,
   routeControlMenuMessage,
 } from "../../packages/frontend-telegram/src/TelegramFrontend.js";
 
@@ -12,24 +13,24 @@ describe("Telegram control menu topic routing", () => {
       direct_messages_topic?: { topic_id: number };
     } = {};
 
-    routeControlMenuMessage(message, "41633");
+    expect(routeControlMenuMessage(message, "41633")).toBe(true);
 
     expect(message).toEqual({ message_thread_id: 41633, is_topic_message: true });
   });
 
-  it("overrides both Telegram topic fields for exact control actions", () => {
+  it("preserves a real topic on exact control actions", () => {
     const message = {
       message_thread_id: 41595,
       is_topic_message: true,
       direct_messages_topic: { topic_id: 41595 },
     };
 
-    routeControlMenuMessage(message, "41633");
+    expect(routeControlMenuMessage(message, "41633")).toBe(false);
 
     expect(message).toEqual({
-      message_thread_id: 41633,
+      message_thread_id: 41595,
       is_topic_message: true,
-      direct_messages_topic: { topic_id: 41633 },
+      direct_messages_topic: { topic_id: 41595 },
     });
   });
 
@@ -55,5 +56,13 @@ describe("Telegram control menu topic routing", () => {
 
     expect(menu.inline_keyboard).toBeUndefined();
     expect(menu.keyboard?.flat()).toContainEqual({ text: "🔗 Attach thread" });
+  });
+
+  it("isolates pending menu input between private-chat topics", () => {
+    const chatId = 372399501;
+
+    expect(pendingMenuScopeKey(chatId, "41633")).not.toBe(pendingMenuScopeKey(chatId));
+    expect(pendingMenuScopeKey(chatId, "41913")).not.toBe(pendingMenuScopeKey(chatId, "41633"));
+    expect(pendingMenuScopeKey(chatId)).toBe("372399501:root");
   });
 });

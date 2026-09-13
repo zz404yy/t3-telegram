@@ -3,6 +3,8 @@ import type {
   BindingRecord,
   EnvironmentRecord,
   PendingApprovalRecord,
+  PendingUserInputRecord,
+  UserInputRequest,
   ThreadSubscriptionState,
 } from "../domain/types.js";
 
@@ -67,6 +69,24 @@ export interface GatewayRepository {
   claimPendingApproval(id: string): boolean;
   releasePendingApproval(id: string): void;
   resolvePendingApproval(id: string): void;
+  savePendingUserInput(input: {
+    bindingId: string;
+    t3RequestId: string;
+    request: UserInputRequest;
+    telegramMessageId?: string;
+    answers?: Record<string, string | string[]>;
+    questionIndex?: number;
+    awaitingCustomAnswer?: boolean;
+  }): PendingUserInputRecord;
+  findPendingUserInput(id: string): PendingUserInputRecord | undefined;
+  findPendingUserInputForBinding(bindingId: string): PendingUserInputRecord | undefined;
+  findPendingUserInputByRequest(
+    bindingId: string,
+    t3RequestId: string,
+  ): PendingUserInputRecord | undefined;
+  claimPendingUserInput(id: string): boolean;
+  releasePendingUserInput(id: string): void;
+  resolvePendingUserInput(id: string): void;
   hasProcessedUpdate(updateId: number): boolean;
   markUpdateProcessed(updateId: number): void;
   claimTurnStart(deduplicationKey: string): boolean;

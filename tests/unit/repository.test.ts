@@ -197,5 +197,37 @@ describe("SQLite gateway repository", () => {
     });
     expect(repo.claimPendingApproval(approval.id)).toBe(true);
     expect(repo.claimPendingApproval(approval.id)).toBe(false);
+
+    const request = {
+      requestId: "input-1",
+      questions: [
+        {
+          id: "mode",
+          question: "Choose mode",
+          multiSelect: false,
+          allowCustomAnswer: false,
+          options: [{ value: "safe", label: "Safe" }],
+        },
+      ],
+    };
+    const pendingInput = repo.savePendingUserInput({
+      bindingId: binding.id,
+      t3RequestId: request.requestId,
+      request,
+    });
+    const selected = repo.savePendingUserInput({
+      bindingId: binding.id,
+      t3RequestId: request.requestId,
+      request,
+      answers: { mode: "safe" },
+      questionIndex: 1,
+    });
+    expect(selected.id).toBe(pendingInput.id);
+    expect(repo.findPendingUserInputForBinding(binding.id)).toMatchObject({
+      answers: { mode: "safe" },
+      questionIndex: 1,
+    });
+    expect(repo.claimPendingUserInput(pendingInput.id)).toBe(true);
+    expect(repo.claimPendingUserInput(pendingInput.id)).toBe(false);
   });
 });

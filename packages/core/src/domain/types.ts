@@ -148,6 +148,26 @@ export interface ApprovalRequest {
   options: ApprovalOption[];
 }
 
+export interface UserInputOption {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface UserInputQuestion {
+  id: string;
+  header?: string;
+  question: string;
+  multiSelect: boolean;
+  allowCustomAnswer: boolean;
+  options: UserInputOption[];
+}
+
+export interface UserInputRequest {
+  requestId: string;
+  questions: UserInputQuestion[];
+}
+
 export interface ChangedFileSummary {
   path: string;
   kind?: string;
@@ -164,6 +184,9 @@ type ThreadEventPayload =
   | { type: "tool.started"; label: string; detail?: string; sequence?: number }
   | { type: "tool.finished"; label: string; ok: boolean; detail?: string; sequence?: number }
   | { type: "approval.requested"; request: ApprovalRequest; sequence?: number }
+  | { type: "user-input.requested"; request: UserInputRequest; sequence?: number }
+  | { type: "user-input.resolved"; requestId: string; sequence?: number }
+  | { type: "response.finalizing"; sequence?: number }
   | { type: "files.changed"; files: ChangedFileSummary[]; sequence?: number }
   | {
       type: "turn.completed";
@@ -253,6 +276,13 @@ export interface ApprovalResponseInput {
   decision: ApprovalOption["decision"];
 }
 
+export interface UserInputResponseInput {
+  environmentId: string;
+  threadId: string;
+  requestId: string;
+  answers: Record<string, string | string[]>;
+}
+
 export interface GetTurnDiffInput {
   environmentId: string;
   threadId: string;
@@ -309,6 +339,19 @@ export interface PendingApprovalRecord {
   status: "pending" | "processing" | "resolved" | "expired";
   options: ApprovalOption[];
   expiresAt?: string;
+  createdAt: string;
+}
+
+export interface PendingUserInputRecord {
+  id: string;
+  bindingId: string;
+  t3RequestId: string;
+  telegramMessageId?: string;
+  status: "pending" | "processing" | "resolved" | "expired";
+  request: UserInputRequest;
+  answers: Record<string, string | string[]>;
+  questionIndex: number;
+  awaitingCustomAnswer: boolean;
   createdAt: string;
 }
 

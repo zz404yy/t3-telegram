@@ -100,8 +100,10 @@ describe("ThreadSubscriptionManager", () => {
       backend: backendWithEvents({
         "thread-1": [
           { type: "turn.started", threadId: "thread-1", turnId: "turn-1", sequence: 1 },
-          { type: "assistant.message", text: "answer one", messageId: "m1", sequence: 2 },
-          { type: "turn.completed", status: "success", turnId: "turn-1", sequence: 3 },
+          { type: "assistant.message", text: "working", messageId: "m1", sequence: 2 },
+          { type: "response.finalizing", sequence: 3 },
+          { type: "assistant.message", text: "answer one", messageId: "m2", sequence: 4 },
+          { type: "turn.completed", status: "success", turnId: "turn-1", sequence: 5 },
         ],
         "thread-2": [
           { type: "turn.started", threadId: "thread-2", turnId: "turn-2", sequence: 10 },
@@ -115,12 +117,12 @@ describe("ThreadSubscriptionManager", () => {
 
     await vi.waitFor(() => expect(messages).toHaveLength(2));
     expect(messages.map((message) => message.text).sort()).toEqual([
-      "[First]\nanswer one\n\n✅ Turn success",
-      "[Second]\nanswer two\n\n✅ Turn success",
+      "[First]\n🧭 Progress\n\nworking\n\n━━━━━━━━━━━━\n\n🎯 Final result\n\nanswer one\n\n━━━━━━━━━━━━\n\n✅ Turn completed",
+      "[Second]\n🎯 Final result\n\nanswer two\n\n━━━━━━━━━━━━\n\n✅ Turn completed",
     ]);
     expect(repository.resolveBinding(userId, "99")?.t3ThreadId).toBe("thread-2");
     expect(repository.getThreadSubscriptionState(environment.id, "thread-1")).toMatchObject({
-      lastSequence: 3,
+      lastSequence: 5,
       lastCompletedTurnId: "turn-1",
     });
   });
@@ -168,5 +170,64 @@ describe("ThreadSubscriptionManager", () => {
       }),
     );
     expect(messages).toEqual([]);
+  });
+
+  it("renders AI user-input options as Telegram buttons in the bound topic", async () => {
+    const { repository, userId, environment } = setup();
+    const binding = repository.saveBinding({
+      userId,
+      telegramChatId: "99",
+      telegramThreadId: "7",
+      environmentId: environment.id,
+      t3ThreadId: "thread-questions",
+    });
+    const { api, messages } = fakeApi();
+    const manager = new ThreadSubscriptionManager({
+      api,
+      repository,
+      logger,
+      allowedUserIds: new Set(["99"]),
+      backend: backendWithEvents({
+        "thread-questions": [
+          {
+            type: "user-input.requested",
+            sequence: 20,
+            request: {
+              requestId: "request-1",
+              questions: [
+                {
+                  id: "mode",
+                  question: "Which mode?",
+                  multiSelect: false,
+                  allowCustomAnswer: false,
+                  options: [
+                    { value: "safe", label: "Safe" },
+                    { value: "fast", label: "Fast" },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    });
+    managers.push(manager);
+    manager.start();
+
+    await vi.waitFor(() => expect(messages).toHaveLength(1));
+    expect(messages[0]).toMatchObject({ chatId: 99, text: expect.stringContaining("Which mode?") });
+    expect(JSON.parse(JSON.stringify(messages[0]!.options))).toMatchObject({
+      message_thread_id: 7,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "1. Safe", callback_data: expect.stringMatching(/^ui:/) }],
+          [{ text: "2. Fast", callback_data: expect.stringMatching(/^ui:/) }],
+        ],
+      },
+    });
+    expect(repository.findPendingUserInputByRequest(binding.id, "request-1")).toMatchObject({
+      telegramMessageId: "1",
+      status: "pending",
+    });
   });
 });

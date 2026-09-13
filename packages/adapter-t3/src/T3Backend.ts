@@ -31,6 +31,7 @@ import type {
   ThreadEvent,
   ThreadHistoryMessage,
   ThreadSummary,
+  UserInputResponseInput,
 } from "@t3-vibe/core";
 import { GatewayError } from "@t3-vibe/core";
 import { BearerAuthStrategy } from "./auth/BearerAuthStrategy.js";
@@ -727,6 +728,18 @@ export class T3Backend implements CodingBackend, EnvironmentConnector {
       createdAt: new Date().toISOString(),
     });
     connection.capabilities.approval = supported;
+  }
+
+  async respondToUserInput(input: UserInputResponseInput): Promise<void> {
+    const connection = await this.requireConnection(input.environmentId);
+    await connection.rpc.request(RPC.dispatch, {
+      type: "thread.user-input.respond",
+      commandId: randomUUID(),
+      threadId: input.threadId,
+      requestId: input.requestId,
+      answers: input.answers,
+      createdAt: new Date().toISOString(),
+    });
   }
 
   async getTurnDiff(input: GetTurnDiffInput): Promise<DiffSummary> {

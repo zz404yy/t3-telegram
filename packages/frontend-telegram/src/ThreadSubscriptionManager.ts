@@ -10,9 +10,11 @@ import type {
   GatewayRepository,
   ThreadEvent,
   ThreadSubscriptionState,
+  UserInputRequest,
 } from "@t3-vibe/core";
 import { renderDiffSummary } from "./renderers/text.js";
 import { TelegramDraftStreamer } from "./streaming/TelegramDraftStreamer.js";
+import { buildUserInputView } from "./userInput.js";
 
 interface ThreadSubscriptionManagerOptions {
   api: Api;
@@ -35,8 +37,11 @@ interface Worker {
 interface DeliverySession {
   streamer: TelegramDraftStreamer;
   messages: Map<string, string>;
+  finalMessageIds: Set<string>;
   fallback: string;
+  finalFallback: string;
   files: ChangedFileSummary[];
+  finalizing: boolean;
   completed: boolean;
 }
 
@@ -360,6 +365,28 @@ export class ThreadSubscriptionManager {
       await this.sendApproval(binding, event.request);
       return;
     }
+    if (event.type === "user-input.requested") {
+      await this.sendUserInput(binding, event.request);
+      return;
+    }
+    if (event.type === "user-input.resolved") {
+      const pending = this.options.repository.findPendingUserInputByRequest(
+        binding.id,
+        event.requestId,
+      );
+      if (pending && pending.status !== "resolved") {
+        this.options.repository.resolvePendingUserInput(pending.id);
+        if (pending.telegramMessageId)
+          await this.options.api
+            .editMessageReplyMarkup(
+              chatTarget(binding.telegramChatId),
+              Number(pending.telegramMessageId),
+              { reply_markup: { inline_keyboard: [] } },
+            )
+            .catch(() => undefined);
+      }
+      return;
+    }
     if (event.type === "usage.updated" || event.type === "tool.finished") return;
 
     const key = `${worker.environmentId}\u0000${worker.t3ThreadId}\u0000${binding.id}`;
@@ -373,26 +400,44 @@ export class ThreadSubscriptionManager {
       this.sessions.set(key, session);
     }
 
+    if (event.type === "response.finalizing") {
+      session.finalizing = true;
+      await session.streamer.update(
+        this.withRouteLabel(binding, this.inProgressOutput(session, this.locale(binding))),
+        true,
+      );
+      return;
+    }
+
     if (event.type === "assistant.delta") {
-      if (event.messageId)
+      if (event.messageId) {
+        if (session.finalizing) session.finalMessageIds.add(event.messageId);
         session.messages.set(
           event.messageId,
           `${session.messages.get(event.messageId) ?? ""}${event.text}`,
         );
+      } else if (session.finalizing) session.finalFallback += event.text;
       else session.fallback += event.text;
-      await session.streamer.update(this.withRouteLabel(binding, this.output(session)));
+      await session.streamer.update(
+        this.withRouteLabel(binding, this.inProgressOutput(session, this.locale(binding))),
+      );
       return;
     }
     if (event.type === "assistant.message" && event.text) {
       if (event.messageId) {
+        if (session.finalizing) session.finalMessageIds.add(event.messageId);
         const current = session.messages.get(event.messageId) ?? "";
         if (event.text.length >= current.length) session.messages.set(event.messageId, event.text);
-      } else if (!session.fallback) session.fallback = event.text;
-      await session.streamer.update(this.withRouteLabel(binding, this.output(session)), true);
+      } else if (session.finalizing) session.finalFallback = event.text;
+      else if (!session.fallback) session.fallback = event.text;
+      await session.streamer.update(
+        this.withRouteLabel(binding, this.inProgressOutput(session, this.locale(binding))),
+        true,
+      );
       return;
     }
     if (event.type === "activity" || event.type === "tool.started") {
-      const output = this.output(session);
+      const output = this.inProgressOutput(session, this.locale(binding));
       const status = event.type === "activity" ? event.title : event.label;
       await session.streamer.update(
         this.withRouteLabel(binding, `${output}${output ? "\n\n" : ""}⏳ ${status}`),
@@ -405,8 +450,6 @@ export class ThreadSubscriptionManager {
     }
     if (event.type === "turn.completed") {
       if (session.completed) return;
-      const output = this.output(session);
-      const icon = event.status === "success" ? "✅" : event.status === "cancelled" ? "⏹" : "❌";
       const additions = session.files.reduce((total, file) => total + file.additions, 0);
       const deletions = session.files.reduce((total, file) => total + file.deletions, 0);
       const diffSummary = session.files.length
@@ -421,18 +464,10 @@ export class ThreadSubscriptionManager {
           )
         : "";
       const locale = this.locale(binding);
-      const status =
-        locale === "zh"
-          ? event.status === "success"
-            ? "成功"
-            : event.status === "cancelled"
-              ? "已取消"
-              : "失败"
-          : event.status;
       await session.streamer.finalize(
         this.withRouteLabel(
           binding,
-          `${output}${output ? "\n\n" : ""}${icon} ${locale === "zh" ? "任务" : "Turn"} ${status}${diffSummary ? `\n\n${diffSummary}` : ""}`,
+          this.completedOutput(session, event.status, locale, diffSummary),
         ),
       );
       session.completed = true;
@@ -447,14 +482,74 @@ export class ThreadSubscriptionManager {
         binding.telegramThreadId ? Number(binding.telegramThreadId) : undefined,
       ),
       messages: new Map(),
+      finalMessageIds: new Set(),
       fallback: "",
+      finalFallback: "",
       files: [],
+      finalizing: false,
       completed: false,
     };
   }
 
-  private output(session: DeliverySession): string {
-    return [...session.messages.values(), session.fallback].filter(Boolean).join("\n\n");
+  private outputGroups(
+    session: DeliverySession,
+    completed: boolean,
+  ): { intermediate: string[]; final: string[] } {
+    const intermediate: string[] = [];
+    const final: string[] = [];
+    for (const [id, text] of session.messages) {
+      if (!text) continue;
+      (session.finalMessageIds.has(id) ? final : intermediate).push(text);
+    }
+    if (session.fallback) intermediate.push(session.fallback);
+    if (session.finalFallback) final.push(session.finalFallback);
+    if (completed && final.length === 0 && intermediate.length > 0) final.push(intermediate.pop()!);
+    return { intermediate, final };
+  }
+
+  private inProgressOutput(session: DeliverySession, locale: BotLocale): string {
+    const { intermediate, final } = this.outputGroups(session, false);
+    const sections: string[] = [];
+    if (intermediate.length)
+      sections.push(
+        `${locale === "zh" ? "🧭 中间过程 · 进行中" : "🧭 Progress · working"}\n\n${intermediate.join("\n\n")}`,
+      );
+    if (final.length || session.finalizing)
+      sections.push(
+        `${locale === "zh" ? "✍️ 最终结果 · 生成中" : "✍️ Final answer · writing"}\n\n${final.join("\n\n") || (locale === "zh" ? "正在整理最终回答…" : "Preparing the final answer…")}`,
+      );
+    return sections.join("\n\n━━━━━━━━━━━━\n\n");
+  }
+
+  private completedOutput(
+    session: DeliverySession,
+    status: "success" | "failed" | "cancelled",
+    locale: BotLocale,
+    diffSummary: string,
+  ): string {
+    const { intermediate, final } = this.outputGroups(session, true);
+    const sections: string[] = [];
+    if (intermediate.length)
+      sections.push(
+        `${locale === "zh" ? "🧭 中间过程" : "🧭 Progress"}\n\n${intermediate.join("\n\n")}`,
+      );
+    sections.push(
+      `${locale === "zh" ? "🎯 最终结果" : "🎯 Final result"}\n\n${final.join("\n\n") || (locale === "zh" ? "任务结束，但没有文本输出。" : "The turn ended without text output.")}`,
+    );
+    const statusLine =
+      status === "success"
+        ? locale === "zh"
+          ? "✅ 任务已完成"
+          : "✅ Turn completed"
+        : status === "cancelled"
+          ? locale === "zh"
+            ? "⏹ 任务已取消"
+            : "⏹ Turn cancelled"
+          : locale === "zh"
+            ? "❌ 任务执行失败"
+            : "❌ Turn failed";
+    sections.push(`${statusLine}${diffSummary ? `\n\n${diffSummary}` : ""}`);
+    return sections.join("\n\n━━━━━━━━━━━━\n\n");
   }
 
   private withRouteLabel(binding: BindingRecord, text: string): string {
@@ -516,6 +611,31 @@ export class ThreadSubscriptionManager {
       t3RequestId: request.requestId,
       telegramMessageId: String(sent.message_id),
       options: request.options,
+    });
+  }
+
+  private async sendUserInput(binding: BindingRecord, request: UserInputRequest): Promise<void> {
+    const existing = this.options.repository.findPendingUserInputByRequest(
+      binding.id,
+      request.requestId,
+    );
+    if (existing?.telegramMessageId || existing?.status === "resolved") return;
+    const pending = this.options.repository.savePendingUserInput({
+      bindingId: binding.id,
+      t3RequestId: request.requestId,
+      request,
+    });
+    const view = buildUserInputView(pending, this.locale(binding));
+    const sent = await this.options.api.sendMessage(
+      chatTarget(binding.telegramChatId),
+      this.withRouteLabel(binding, view.text),
+      { ...threadOptions(binding), reply_markup: view.keyboard },
+    );
+    this.options.repository.savePendingUserInput({
+      bindingId: binding.id,
+      t3RequestId: request.requestId,
+      request,
+      telegramMessageId: String(sent.message_id),
     });
   }
 

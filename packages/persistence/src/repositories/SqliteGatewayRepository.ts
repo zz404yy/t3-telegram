@@ -7,9 +7,11 @@ import type {
   EnvironmentRecord,
   GatewayRepository,
   PendingApprovalRecord,
+  PendingUserInputRecord,
   SaveBindingInput,
   SaveEnvironmentInput,
   ThreadSubscriptionState,
+  UserInputRequest,
 } from "@t3-vibe/core";
 import { CredentialCipher } from "../crypto/CredentialCipher.js";
 import { migrations } from "../migrations/schema.js";
@@ -422,6 +424,101 @@ export class SqliteGatewayRepository implements GatewayRepository {
     this.db.prepare("UPDATE pending_approvals SET status = 'resolved' WHERE id = ?").run(id);
   }
 
+  savePendingUserInput(input: {
+    bindingId: string;
+    t3RequestId: string;
+    request: UserInputRequest;
+    telegramMessageId?: string;
+    answers?: Record<string, string | string[]>;
+    questionIndex?: number;
+    awaitingCustomAnswer?: boolean;
+  }): PendingUserInputRecord {
+    const existing = this.db
+      .prepare("SELECT * FROM pending_user_inputs WHERE binding_id = ? AND t3_request_id = ?")
+      .get(input.bindingId, input.t3RequestId) as Row | undefined;
+    const id = existing ? String(existing.id) : randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO pending_user_inputs(
+           id, binding_id, t3_request_id, telegram_message_id, status, request_json,
+           answers_json, question_index, awaiting_custom_answer, created_at
+         ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+         ON CONFLICT(binding_id, t3_request_id) DO UPDATE SET
+           telegram_message_id = COALESCE(excluded.telegram_message_id, telegram_message_id),
+           request_json = excluded.request_json,
+           answers_json = COALESCE(excluded.answers_json, answers_json),
+           question_index = excluded.question_index,
+           awaiting_custom_answer = excluded.awaiting_custom_answer`,
+      )
+      .run(
+        id,
+        input.bindingId,
+        input.t3RequestId,
+        input.telegramMessageId ?? null,
+        JSON.stringify(input.request),
+        JSON.stringify(
+          input.answers ?? (existing ? JSON.parse(String(existing.answers_json)) : {}),
+        ),
+        input.questionIndex ?? (existing ? Number(existing.question_index) : 0),
+        (input.awaitingCustomAnswer ??
+          (existing ? Number(existing.awaiting_custom_answer) === 1 : false))
+          ? 1
+          : 0,
+        existing ? String(existing.created_at) : new Date().toISOString(),
+      );
+    const saved = this.findPendingUserInput(id);
+    if (!saved) throw new Error("Pending user input insert failed");
+    return saved;
+  }
+
+  findPendingUserInput(id: string): PendingUserInputRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM pending_user_inputs WHERE id = ?").get(id) as
+      Row | undefined;
+    return row ? this.pendingUserInputFromRow(row) : undefined;
+  }
+
+  findPendingUserInputForBinding(bindingId: string): PendingUserInputRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM pending_user_inputs WHERE binding_id = ? AND status = 'pending'
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(bindingId) as Row | undefined;
+    return row ? this.pendingUserInputFromRow(row) : undefined;
+  }
+
+  findPendingUserInputByRequest(
+    bindingId: string,
+    t3RequestId: string,
+  ): PendingUserInputRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM pending_user_inputs WHERE binding_id = ? AND t3_request_id = ?")
+      .get(bindingId, t3RequestId) as Row | undefined;
+    return row ? this.pendingUserInputFromRow(row) : undefined;
+  }
+
+  claimPendingUserInput(id: string): boolean {
+    return (
+      this.db
+        .prepare(
+          "UPDATE pending_user_inputs SET status = 'processing' WHERE id = ? AND status = 'pending'",
+        )
+        .run(id).changes === 1
+    );
+  }
+
+  releasePendingUserInput(id: string): void {
+    this.db
+      .prepare(
+        "UPDATE pending_user_inputs SET status = 'pending' WHERE id = ? AND status = 'processing'",
+      )
+      .run(id);
+  }
+
+  resolvePendingUserInput(id: string): void {
+    this.db.prepare("UPDATE pending_user_inputs SET status = 'resolved' WHERE id = ?").run(id);
+  }
+
   hasProcessedUpdate(updateId: number): boolean {
     return Boolean(
       this.db.prepare("SELECT 1 FROM processed_telegram_updates WHERE update_id = ?").get(updateId),
@@ -545,6 +642,23 @@ export class SqliteGatewayRepository implements GatewayRepository {
       ...(typeof row.last_sequence === "number" ? { lastSequence: row.last_sequence } : {}),
       ...(optionalString(row.last_completed_turn_id)
         ? { lastCompletedTurnId: optionalString(row.last_completed_turn_id)! }
+        : {}),
+    };
+  }
+
+  private pendingUserInputFromRow(row: Row): PendingUserInputRecord {
+    return {
+      id: String(row.id),
+      bindingId: String(row.binding_id),
+      t3RequestId: String(row.t3_request_id),
+      status: String(row.status) as PendingUserInputRecord["status"],
+      request: JSON.parse(String(row.request_json)) as UserInputRequest,
+      answers: JSON.parse(String(row.answers_json)) as Record<string, string | string[]>,
+      questionIndex: Number(row.question_index),
+      awaitingCustomAnswer: Number(row.awaiting_custom_answer) === 1,
+      createdAt: String(row.created_at),
+      ...(optionalString(row.telegram_message_id)
+        ? { telegramMessageId: optionalString(row.telegram_message_id)! }
         : {}),
     };
   }

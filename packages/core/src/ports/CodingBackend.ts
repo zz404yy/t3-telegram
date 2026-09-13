@@ -24,6 +24,7 @@ import type {
   ThreadEvent,
   ThreadHistoryMessage,
   ThreadSummary,
+  UserInputResponseInput,
 } from "../domain/types.js";
 
 export interface CodingBackend {
@@ -45,6 +46,7 @@ export interface CodingBackend {
   interruptTurn(input: InterruptTurnInput): Promise<void>;
   subscribeThread(input: SubscribeThreadInput): AsyncIterable<ThreadEvent>;
   respondToApproval(input: ApprovalResponseInput): Promise<void>;
+  respondToUserInput(input: UserInputResponseInput): Promise<void>;
   getTurnDiff(input: GetTurnDiffInput): Promise<DiffSummary>;
   getThreadDiff(input: GetThreadDiffInput): Promise<DiffSummary>;
   getThreadHistory(input: GetThreadHistoryInput): Promise<ThreadHistoryMessage[]>;
